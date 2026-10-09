@@ -1,0 +1,8 @@
+{% extends "admin/change_list.html" %}
+{% block object-tools-items %}
+  {% if perms.backoffice.importar_planilha %}
+    <li><a href="{% url 'admin:backoffice_produto_modelo' %}" class="addlink">Baixar modelo (.xlsx)</a></li>
+    <li><a href="{% url 'admin:backoffice_produto_importar' %}" class="addlink">Importar planilha</a></li>
+  {% endif %}
+  {{ block.super }}
+{% endblock %}

@@ -1,0 +1,29 @@
+{% extends "admin/base_site.html" %}
+{% block breadcrumbs %}
+<div class="breadcrumbs">
+  <a href="{% url 'admin:index' %}">Início</a> › <a href="{{ voltar }}">Produtos</a> › Importar planilha
+</div>
+{% endblock %}
+{% block content %}
+<div id="content-main">
+  <p>Use o <a href="{% url 'admin:backoffice_produto_modelo' %}">modelo de planilha</a>. O SKU identifica o produto: se já existir, ele é atualizado.</p>
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <input type="submit" value="Enviar" class="default">
+  </form>
+
+  {% if resultado %}
+    <h2>{% if apenas_validar %}Resultado da validação (nada foi gravado){% else %}Importação concluída{% endif %}</h2>
+    <p>{{ resultado.total }} linha(s): {{ resultado.criados }} nova(s), {{ resultado.atualizados }} atualizada(s), {{ resultado.erros|length }} com erro.</p>
+    {% if resultado.erros %}
+      <table>
+        <thead><tr><th>Linha</th><th>Campo</th><th>Problema</th></tr></thead>
+        <tbody>
+          {% for erro in resultado.erros %}<tr><td>{{ erro.linha }}</td><td>{{ erro.campo }}</td><td>{{ erro.mensagem }}</td></tr>{% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  {% endif %}
+</div>
+{% endblock %}
