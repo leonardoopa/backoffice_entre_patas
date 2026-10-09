@@ -4,7 +4,7 @@ from decimal import Decimal
 from django.contrib.auth.models import Group, User
 from openpyxl import Workbook
 
-from backoffice.models import Animal, Canal, Departamento, Marca, Produto, Subdepartamento
+from backoffice.models import Animal, Canal, Departamento, Marca, Pedido, PedidoItem, Produto, Subdepartamento
 from backoffice.services.canais import definir_preco_site, garantir_canais
 from backoffice.services.chaves_api import gerar_chave
 from backoffice.services.estoque import definir_saldo
@@ -73,3 +73,14 @@ def planilha(linhas, colunas=None):
     livro.save(saida)
     saida.seek(0)
     return saida
+
+
+def criar_pedido_marketplace(produto, canal="mercado_livre", quantidade=1, preco="10.00", status="pago", numero="MK-1"):
+    pedido = Pedido.objects.create(
+        canal=Canal.objects.get(codigo=canal), numero_externo=numero, status=status, comprado_em="2026-01-01T10:00:00Z",
+    )
+    item = PedidoItem.objects.create(
+        pedido=pedido, produto=produto, sku_externo=produto.sku, descricao=produto.nome,
+        quantidade=quantidade, preco_unitario=Decimal(preco),
+    )
+    return pedido, item

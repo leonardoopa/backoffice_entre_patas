@@ -1,12 +1,14 @@
 import json
+from datetime import timedelta
 from decimal import Decimal
 
 from django.test import TestCase
+from django.utils import timezone
 
-from backoffice.models import Pedido, Vitrine, VitrineItem
-from backoffice.services.estoque import saldo_atual
+from backoffice.models import Canal, GrupoProduto, Pedido, Produto, ProdutoCanal, ProdutoImagem, Vitrine, VitrineItem
+from backoffice.services.estoque import definir_seguranca, reservar, saldo_atual
 
-from .fabricas import cabecalho_auth, criar_catalogo
+from .fabricas import cabecalho_auth, criar_catalogo, criar_pedido_marketplace, criar_produto
 
 BASE = "/api/v1"
 
@@ -238,3 +240,142 @@ class PedidosApiTests(TestCase):
 
     def test_get_no_endpoint_de_pedidos_nao_e_permitido(self):
         self.assertEqual(self.client.get(f"{BASE}/pedidos/", **self.auth).status_code, 405)
+
+
+class PrecoPorPrazoEEstoqueApiTests(TestCase):
+    def setUp(self):
+        self.c = criar_catalogo()
+        self.auth = cabecalho_auth()
+        self.linha = ProdutoCanal.objects.get(produto=self.c["racao"], canal__codigo="site")
+
+    def item(self, sku="RAC-1"):
+        itens = self.client.get(f"{BASE}/catalogo/produtos/", {"sku": sku}, **self.auth).json()["itens"]
+        return itens[0]
+
+    def test_promocao_vencida_some_da_api_e_das_ofertas(self):
+        self.linha.promo_fim = timezone.now() - timedelta(hours=1)
+        self.linha.save()
+        item = self.item()
+        self.assertEqual((item["preco_promocional"], item["preco_final"], item["promocao_fim"]), (None, "100.00", None))
+        ofertas = self.client.get(f"{BASE}/vitrines/", **self.auth).json()["ofertas"]["itens"]
+        self.assertEqual(ofertas, [])
+        self.assertEqual(self.client.get(f"{BASE}/catalogo/produtos/", {"promo": "1"}, **self.auth).json()["total"], 0)
+
+    def test_promocao_futura_ainda_nao_vale(self):
+        self.linha.promo_inicio = timezone.now() + timedelta(days=1)
+        self.linha.save()
+        self.assertEqual(self.item()["preco_final"], "100.00")
+
+    def test_promocao_com_prazo_informa_quando_termina(self):
+        fim = timezone.now() + timedelta(days=3)
+        self.linha.promo_fim = fim
+        self.linha.save()
+        item = self.item()
+        self.assertEqual((item["preco_final"], item["promocao_fim"]), ("80.00", fim.isoformat()))
+
+    def test_faixa_de_preco_usa_o_preco_vigente(self):
+        self.assertEqual([i["sku"] for i in self.client.get(f"{BASE}/catalogo/produtos/", {"faixa": "50-100"}, **self.auth).json()["itens"]], ["RAC-1"])
+        self.linha.promo_fim = timezone.now() - timedelta(hours=1)
+        self.linha.save()
+        self.assertEqual(self.client.get(f"{BASE}/catalogo/produtos/", {"faixa": "50-100"}, **self.auth).json()["total"], 0)
+
+    def test_estoque_da_api_e_o_disponivel(self):
+        definir_seguranca(self.c["racao"], 2)
+        reservar(self.c["racao"], 1, Canal.objects.get(codigo="site"), "c1")
+        self.assertEqual(self.item()["estoque"], 2)
+
+    def test_filtro_por_varios_skus(self):
+        resposta = self.client.get(f"{BASE}/catalogo/produtos/", [("sku", "RAC-1"), ("sku", "BOL-1"), ("sku", "OCU-1")], **self.auth).json()
+        self.assertEqual({i["sku"] for i in resposta["itens"]}, {"RAC-1", "BOL-1"})
+
+
+class VariacoesEImagensApiTests(TestCase):
+    def setUp(self):
+        self.c = criar_catalogo()
+        self.auth = cabecalho_auth()
+        grupo = GrupoProduto.objects.create(slug="racao-premium", nome="Ração Premium")
+        Produto.objects.filter(pk=self.c["racao"].pk).update(grupo=grupo, variacao="15 kg")
+        self.maior = criar_produto("RAC-3", "Ração Premium 3kg", self.c["caes"], "40.00", None, 7, self.c["racoes"])
+        Produto.objects.filter(pk=self.maior.pk).update(grupo=grupo, variacao="3 kg")
+        self.fora = criar_produto("RAC-30", "Ração Premium 30kg", self.c["caes"], "300.00", None, 7, publicado=False)
+        Produto.objects.filter(pk=self.fora.pk).update(grupo=grupo, variacao="30 kg")
+
+    def test_detalhe_traz_so_as_variacoes_publicadas_ordenadas_por_preco(self):
+        item = self.client.get(f"{BASE}/catalogo/produtos/rac-1/", **self.auth).json()
+        self.assertEqual(item["grupo"], {"slug": "racao-premium", "nome": "Ração Premium"})
+        self.assertEqual([(v["variacao"], v["preco_final"]) for v in item["variacoes"]], [("3 kg", "40.00"), ("15 kg", "80.00")])
+
+    def test_produto_sem_grupo_nao_tem_variacoes(self):
+        item = self.client.get(f"{BASE}/catalogo/produtos/bol-1/", **self.auth).json()
+        self.assertEqual((item["grupo"], item["variacoes"]), (None, []))
+
+    def test_imagens_na_ordem_definida(self):
+        ProdutoImagem.objects.create(produto=self.c["racao"], url="https://x/2.jpg", posicao=2)
+        ProdutoImagem.objects.create(produto=self.c["racao"], url="https://x/1.jpg", posicao=1)
+        item = self.client.get(f"{BASE}/catalogo/produtos/rac-1/", **self.auth).json()
+        self.assertEqual(item["imagens"], ["https://x/1.jpg", "https://x/2.jpg"])
+        self.assertEqual(item["arte"]["imagem_url"], "https://x/1.jpg")
+
+    def test_sem_imagens_usa_a_url_antiga(self):
+        Produto.objects.filter(pk=self.c["racao"].pk).update(imagem_url="https://x/velha.jpg")
+        item = self.client.get(f"{BASE}/catalogo/produtos/rac-1/", **self.auth).json()
+        self.assertEqual(item["imagens"], ["https://x/velha.jpg"])
+
+
+class PedidosConsultaApiTests(TestCase):
+    def setUp(self):
+        self.c = criar_catalogo()
+        self.auth = cabecalho_auth()
+        self.client.post(f"{BASE}/pedidos/", json.dumps({
+            "numero_externo": "S-1", "frete": "10.00", "cliente": {"id_externo": "u1", "nome": "Ana"},
+            "pagamento": {"forma": "pix", "parcelas": 1},
+            "itens": [{"sku": "BOL-1", "quantidade": 2}],
+        }), content_type="application/json", **self.auth)
+
+    def test_detalhe_do_pedido(self):
+        pedido = self.client.get(f"{BASE}/pedidos/S-1/", **self.auth).json()
+        self.assertEqual((pedido["status"], pedido["total"], pedido["pagamento"]["forma"]), ("novo", "70.00", "pix"))
+        self.assertEqual(pedido["itens"][0]["sku"], "BOL-1")
+        self.assertEqual(pedido["cliente"], {"id_externo": "u1", "nome": "Ana", "email": ""})
+        self.assertEqual([h["status"] for h in pedido["historico_status"]], ["novo"])
+        self.assertEqual(self.client.get(f"{BASE}/pedidos/NAO/", **self.auth).status_code, 404)
+
+    def test_pedidos_do_cliente(self):
+        resposta = self.client.get(f"{BASE}/clientes/u1/pedidos/", **self.auth).json()
+        self.assertEqual([p["numero_externo"] for p in resposta["itens"]], ["S-1"])
+        self.assertEqual(self.client.get(f"{BASE}/clientes/outro/pedidos/", **self.auth).json(), {"itens": []})
+
+    def test_pedido_de_marketplace_nao_aparece_na_consulta_do_site(self):
+        criar_pedido_marketplace(self.c["bola"], numero="ML-9")
+        self.assertEqual(self.client.get(f"{BASE}/pedidos/ML-9/", **self.auth).status_code, 404)
+
+    def test_pagamento_aprovado_marca_como_pago(self):
+        resposta = self.client.post(f"{BASE}/pedidos/S-1/pagamento/", json.dumps({"status": "aprovado", "referencia": "tx"}),
+                                    content_type="application/json", **self.auth)
+        self.assertEqual((resposta.status_code, resposta.json()["status"]), (200, "pago"))
+
+    def test_pagamento_recusado_cancela_e_devolve_estoque(self):
+        self.client.post(f"{BASE}/pedidos/S-1/pagamento/", json.dumps({"status": "recusado"}), content_type="application/json", **self.auth)
+        self.assertEqual(Pedido.objects.get(numero_externo="S-1").status, "cancelado")
+        self.assertEqual(saldo_atual(self.c["bola"]), 50)
+
+    def test_pagamento_com_dados_invalidos(self):
+        post = lambda dados, numero="S-1": self.client.post(f"{BASE}/pedidos/{numero}/pagamento/", dados, content_type="application/json", **self.auth)
+        self.assertEqual(post("lixo").status_code, 400)
+        self.assertEqual(post(json.dumps({"status": "talvez"})).status_code, 422)
+        self.assertEqual(post(json.dumps({"status": "aprovado"}), "NAO").status_code, 404)
+
+    def test_chave_de_leitura_nao_altera_pagamento(self):
+        resposta = self.client.post(f"{BASE}/pedidos/S-1/pagamento/", json.dumps({"status": "aprovado"}),
+                                    content_type="application/json", **cabecalho_auth("leitura"))
+        self.assertEqual(resposta.status_code, 403)
+
+    def test_forma_de_pagamento_invalida_no_pedido(self):
+        resposta = self.client.post(f"{BASE}/pedidos/", json.dumps({
+            "numero_externo": "S-2", "itens": [{"sku": "BOL-1", "quantidade": 1}], "pagamento": {"forma": "fiado"},
+        }), content_type="application/json", **self.auth)
+        self.assertEqual(resposta.status_code, 422)
+
+    def test_acoes_da_api_ficam_atribuidas_a_chave(self):
+        movimento = self.c["bola"].movimentos.filter(motivo="venda").first()
+        self.assertEqual(movimento.usuario, "api:teste-site")

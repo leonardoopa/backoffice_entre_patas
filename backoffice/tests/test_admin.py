@@ -3,10 +3,20 @@ from django.core.management import call_command
 from django.test import TestCase
 from django.urls import reverse
 
-from backoffice.models import ChaveApi, ImportacaoPlanilha, Produto, ProdutoCanal
-from backoffice.perfis import PERFIS
+from datetime import timedelta
+from decimal import Decimal
 
-from .fabricas import SENHA, criar_catalogo, criar_taxonomia, criar_usuario, planilha
+from django.utils import timezone
+
+from backoffice.models import (
+    Auditoria, Canal, ChaveApi, Devolucao, FilaSync, HistoricoPreco, ImportacaoPlanilha, Pedido, Produto, ProdutoCanal,
+    ProdutoImagem,
+)
+from backoffice.perfis import PERFIS
+from backoffice.services.estoque import saldo_atual
+from backoffice.services.pedidos import registrar_pedido_site
+
+from .fabricas import SENHA, criar_catalogo, criar_pedido_marketplace, criar_taxonomia, criar_usuario, planilha
 
 
 class PerfisTests(TestCase):
@@ -62,7 +72,8 @@ class AdminAcessoTests(TestCase):
         self.entrar(criar_usuario("root", superuser=True))
         for modelo in ("animal", "departamento", "marca", "produto", "estoquemovimento", "canal", "historicopreco",
                        "anuncioexterno", "vitrine", "pedido", "cliente", "vendaprodutocanal", "oportunidadesite",
-                       "importacaoplanilha", "chaveapi"):
+                       "importacaoplanilha", "chaveapi", "estoque", "reservaestoque", "pendenciamarketplace", "filasync",
+                       "margemprodutocanal", "alertamargem", "devolucao", "auditoria", "grupoproduto"):
             resposta = self.client.get(reverse(f"admin:backoffice_{modelo}_changelist"))
             self.assertEqual(resposta.status_code, 200, modelo)
 
@@ -201,3 +212,136 @@ class ChaveApiAdminTests(TestCase):
         self.assertTrue(chave.startswith(registro.prefixo + "."))
         self.assertNotIn(chave, registro.hash_chave)
         self.assertEqual(self.client.get("/api/v1/vitrines/", HTTP_AUTHORIZATION=f"Bearer {chave}").status_code, 200)
+
+
+class AdminOperacaoTests(TestCase):
+    def setUp(self):
+        call_command("criar_perfis", verbosity=0)
+        self.c = criar_catalogo()
+        self.ml = Canal.objects.get(codigo="mercado_livre")
+
+    def entrar(self, usuario):
+        self.assertTrue(self.client.login(username=usuario.username, password=SENHA))
+
+
+    SEM_INLINES = {
+        "itens-TOTAL_FORMS": 0, "itens-INITIAL_FORMS": 0, "historico_status-TOTAL_FORMS": 0, "historico_status-INITIAL_FORMS": 0,
+    }
+
+    def dados_da_pagina(self, produto):
+        resposta = self.client.get(reverse("admin:backoffice_produto_change", args=[produto.pk]))
+        return resposta
+
+    def test_pagina_do_produto_mostra_imagens_canais_e_campos_de_marketplace(self):
+        self.entrar(criar_usuario("ger", "Gerente comercial"))
+        html = self.dados_da_pagina(self.c["racao"]).content.decode()
+        for esperado in ('name="ncm"', 'name="peso_g"', 'name="imagens-0-url"', 'name="canais-0-promo_inicio_0"', 'name="grupo"'):
+            self.assertIn(esperado, html)
+
+    def test_alteracao_no_admin_fica_atribuida_ao_usuario(self):
+        self.entrar(criar_usuario("ger", "Gerente comercial"))
+        self.client.post(
+            reverse("admin:backoffice_produto_changelist"),
+            {"action": "retirar_do_site", "_selected_action": [self.c["racao"].pk]},
+        )
+        registro = Auditoria.objects.filter(tabela="produto_canal", acao="update").first()
+        self.assertEqual((registro.usuario, set(registro.mudancas)), ("ger", {"publicado"}))
+
+    def test_nao_publica_no_marketplace_sem_dados_obrigatorios(self):
+        from backoffice.admin.catalogo import ProdutoCanalForm
+
+        linha = ProdutoCanal.objects.get(produto=self.c["racao"], canal=self.ml)
+        form = ProdutoCanalForm(
+            {"publicado": "on", "preco": "100.00", "status_sync": "pendente", "produto": self.c["racao"].pk, "canal": self.ml.pk},
+            instance=linha,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("Falta: GTIN/EAN", str(form.errors))
+
+    def test_publica_no_marketplace_com_tudo_preenchido(self):
+        from backoffice.admin.catalogo import ProdutoCanalForm
+
+        produto = self.c["racao"]
+        produto.gtin, produto.ncm, produto.peso_g = "7891234567895", "23091000", 15000
+        produto.altura_cm = produto.largura_cm = produto.comprimento_cm = Decimal("30")
+        produto.descricao = "Descrição longa o bastante para o marketplace aceitar."
+        produto.save()
+        ProdutoImagem.objects.create(produto=produto, url="https://exemplo.com/a.jpg")
+        linha = ProdutoCanal.objects.get(produto=produto, canal=self.ml)
+        form = ProdutoCanalForm(
+            {"publicado": "on", "preco": "100.00", "status_sync": "pendente", "produto": produto.pk, "canal": self.ml.pk},
+            instance=linha,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_promocao_com_fim_antes_do_inicio_e_recusada(self):
+        from backoffice.admin.catalogo import ProdutoCanalForm
+
+        linha = ProdutoCanal.objects.get(produto=self.c["racao"], canal__codigo="site")
+        agora = timezone.now()
+        form = ProdutoCanalForm(
+            {"publicado": "on", "preco": "100.00", "preco_promocional": "80.00", "promo_inicio": agora.strftime("%Y-%m-%d %H:%M:%S"),
+             "promo_fim": (agora - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S"), "status_sync": "pendente",
+             "produto": self.c["racao"].pk, "canal": linha.canal_id},
+            instance=linha,
+        )
+        self.assertFalse(form.is_valid())
+        self.assertIn("depois do início", str(form.errors))
+
+    def test_cancelar_pedido_pelo_admin_devolve_estoque_do_site(self):
+        registrar_pedido_site(numero_externo="S-1", itens=[{"sku": "BOL-1", "quantidade": 2}])
+        pedido = Pedido.objects.get()
+        self.entrar(criar_usuario("ger", "Gerente comercial"))
+        self.client.post(reverse("admin:backoffice_pedido_change", args=[pedido.pk]), {"status": "cancelado", **self.SEM_INLINES})
+        pedido.refresh_from_db()
+        self.assertEqual((pedido.status, saldo_atual(self.c["bola"])), ("cancelado", 50))
+
+    def test_status_do_pedido_muda_pelo_atendimento_e_vira_historico(self):
+        registrar_pedido_site(numero_externo="S-1", itens=[{"sku": "BOL-1", "quantidade": 1}])
+        pedido = Pedido.objects.get()
+        self.entrar(criar_usuario("atend", "Atendimento"))
+        self.client.post(reverse("admin:backoffice_pedido_change", args=[pedido.pk]), {"status": "enviado", **self.SEM_INLINES})
+        historico = pedido.historico_status.order_by("id").last()
+        self.assertEqual((historico.status_novo, historico.usuario), ("enviado", "atend"))
+
+    def test_devolucao_pelo_admin_valida_quantidade_e_acoes_seguem_o_fluxo(self):
+        registrar_pedido_site(numero_externo="S-1", itens=[{"sku": "BOL-1", "quantidade": 2}])
+        item = Pedido.objects.get().itens.get()
+        self.entrar(criar_usuario("atend", "Atendimento"))
+        url = reverse("admin:backoffice_devolucao_add")
+        recusado = self.client.post(url, {"pedido_item": item.pk, "quantidade": 5, "motivo": "defeito", "observacao": ""})
+        self.assertContains(recusado, "até 2 unidade")
+        self.assertEqual(self.client.post(url, {"pedido_item": item.pk, "quantidade": 1, "motivo": "defeito", "observacao": ""}).status_code, 302)
+        devolucao = Devolucao.objects.get()
+        lista = reverse("admin:backoffice_devolucao_changelist")
+        for acao in ("aprovar", "receber"):
+            self.client.post(lista, {"action": acao, "_selected_action": [devolucao.pk]})
+        devolucao.refresh_from_db()
+        self.assertEqual(devolucao.status, "recebida")
+        self.assertEqual(saldo_atual(self.c["bola"]), 49)
+
+    def test_fila_de_sync_so_reenvia_quem_publica(self):
+        item = FilaSync.objects.create(canal=self.ml, produto=self.c["bola"], tipo="preco", status="erro", tentativas=8)
+        lista = reverse("admin:backoffice_filasync_changelist")
+        self.entrar(criar_usuario("leitor", "Leitura"))
+        self.assertNotContains(self.client.get(lista), "tentar_de_novo")
+        self.client.logout()
+        self.entrar(criar_usuario("ger", "Gerente comercial"))
+        self.client.post(lista, {"action": "tentar_de_novo", "_selected_action": [item.pk]})
+        item.refresh_from_db()
+        self.assertEqual((item.status, item.tentativas), ("pendente", 0))
+
+    def test_catalogo_nao_ve_auditoria_nem_margem(self):
+        self.entrar(criar_usuario("cat", "Catálogo e estoque"))
+        self.assertEqual(self.client.get(reverse("admin:backoffice_auditoria_changelist")).status_code, 403)
+        self.assertEqual(self.client.get(reverse("admin:backoffice_alertamargem_changelist")).status_code, 403)
+
+    def test_estoque_de_seguranca_e_editavel_mas_saldo_nao(self):
+        self.entrar(criar_usuario("cat", "Catálogo e estoque"))
+        url = reverse("admin:backoffice_estoque_change", args=[self.c["bola"].pk])
+        html = self.client.get(url).content.decode()
+        self.assertIn('name="seguranca"', html)
+        self.assertNotIn('name="quantidade"', html)
+        self.client.post(url, {"seguranca": "4", "quantidade": "999"})
+        self.c["bola"].estoque.refresh_from_db()
+        self.assertEqual((self.c["bola"].estoque.seguranca, self.c["bola"].estoque.quantidade), (4, 50))
