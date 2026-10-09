@@ -9,11 +9,12 @@ from django.utils import timezone
 from django.utils.text import slugify
 
 from backoffice.models import (
-    Animal, Canal, Cliente, Departamento, EstoqueMovimento, Marca, Pedido, PedidoItem, Produto, ProdutoCanal,
-    Subdepartamento, Vitrine, VitrineItem,
+    Animal, Canal, Cliente, Departamento, EstoqueMovimento, GrupoProduto, Marca, Pedido, PedidoItem, Produto,
+    ProdutoCanal, Subdepartamento, Vitrine, VitrineItem,
 )
 from backoffice.services.canais import definir_preco_site, garantir_canais
-from backoffice.services.estoque import definir_saldo
+from backoffice.services import devolucoes
+from backoffice.services.estoque import definir_saldo, definir_seguranca
 
 from ._catalogo_demo import ANIMAIS, DEPARTAMENTOS, PRODUTOS, SUBDEPARTAMENTOS, TEXTOS, ProdutoDemo
 
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 PEDIDOS_DEMO = 120
 CHANCE_FORA_DO_SITE = 0.15
+CHANCE_DADOS_LOGISTICOS = 0.6
+COMISSOES = {"mercado_livre": (Decimal("16"), Decimal("15")), "amazon": (Decimal("15"), Decimal("15"))}
 DIAS_DE_HISTORICO = 80
 SOBRETAXA_MARKETPLACE = {"mercado_livre": Decimal("1.12"), "amazon": Decimal("1.15")}
 
@@ -47,38 +50,68 @@ class Command(BaseCommand):
             for dep, itens in SUBDEPARTAMENTOS.items()
             for ordem, (slug, nome) in enumerate(itens)
         }
+        self._configurar_canais()
         produtos = [self._salvar_produto(item, animais, departamentos, subdepartamentos) for item in PRODUTOS]
         self._vitrine_destaques(produtos)
         if not Pedido.objects.exists():
             self._vendas_demo(produtos)
+            self._devolucoes_demo()
 
         resumo = f"{len(produtos)} produtos, {Pedido.objects.count()} pedidos de demonstração."
         logger.info("seed_demo_concluido %s", resumo)
         self.stdout.write(self.style.SUCCESS(resumo))
 
+    @staticmethod
+    def _configurar_canais() -> None:
+        for codigo, (comissao, margem) in COMISSOES.items():
+            Canal.objects.filter(codigo=codigo).update(comissao_percentual=comissao, margem_minima_percentual=margem)
+
     def _salvar_produto(self, item: ProdutoDemo, animais, departamentos, subdepartamentos) -> Produto:
         marca, _ = Marca.objects.get_or_create(nome=item.marca, defaults={"slug": slugify(item.marca)})
         sorteio = random.Random(item.nome)
         produto, _ = Produto.objects.update_or_create(
-            sku=f"EP-{slugify(item.nome)[:40].upper()}",
+            slug=slugify(item.nome),
             defaults={
-                "slug": slugify(item.nome), "nome": item.nome, "marca": marca,
+                "sku": f"EP-{slugify(item.nome)[:52].upper()}", "nome": item.nome, "marca": marca,
                 "descricao": f"{item.nome}, da {item.marca}. {TEXTOS[item.departamento]}",
                 "animal": animais[item.animal], "departamento": departamentos[item.departamento],
                 "subdepartamento": subdepartamentos[item.subdepartamento],
-                "custo": (Decimal(item.preco) * Decimal("0.55")).quantize(Decimal("0.01")),
+                "custo": (Decimal(item.preco) * Decimal(str(sorteio.choice([0.5, 0.55, 0.6, 0.9])))).quantize(Decimal("0.01")),
                 "preco": Decimal(item.preco), "tipo_arte": item.tipo, "cor_arte": item.cor,
                 "avaliacao": Decimal(str(round(sorteio.uniform(3.9, 5.0), 1))), "num_avaliacoes": sorteio.randint(8, 480),
                 "ativo": True,
             },
         )
+        self._dados_logisticos(produto, sorteio)
+        if item.grupo:
+            grupo, _ = GrupoProduto.objects.get_or_create(slug=slugify(item.grupo), defaults={"nome": item.grupo})
+            Produto.objects.filter(pk=produto.pk).update(grupo=grupo, variacao=item.variacao)
         promocional = Decimal(item.promocional) if item.promocional else None
         fora_do_site = sorteio.random() < CHANCE_FORA_DO_SITE
         garantir_canais(produto, produto.preco, promocional)
         definir_preco_site(produto, produto.preco, promocional, publicado=not fora_do_site)
         self._publicar_marketplaces(produto, sorteio, obrigatorio=fora_do_site)
+        self._prazo_da_promocao(produto, sorteio)
         definir_saldo(produto, item.estoque, EstoqueMovimento.Motivo.ENTRADA, "seed_demo")
+        definir_seguranca(produto, sorteio.choice([0, 0, 2, 3]))
         return produto
+
+    @staticmethod
+    def _dados_logisticos(produto: Produto, sorteio: random.Random) -> None:
+        if sorteio.random() >= CHANCE_DADOS_LOGISTICOS:
+            return
+        Produto.objects.filter(pk=produto.pk).update(
+            gtin=f"789{sorteio.randint(10**9, 10**10 - 1)}", ncm=sorteio.choice(["23091000", "42010000", "39269090"]),
+            peso_g=sorteio.randint(150, 15000), altura_cm=Decimal(sorteio.randint(5, 45)),
+            largura_cm=Decimal(sorteio.randint(5, 40)), comprimento_cm=Decimal(sorteio.randint(8, 60)),
+        )
+
+    @staticmethod
+    def _prazo_da_promocao(produto: Produto, sorteio: random.Random) -> None:
+        agora = timezone.now()
+        ProdutoCanal.objects.filter(produto=produto, canal__codigo="site", preco_promocional__isnull=False).update(
+            promo_inicio=agora - timedelta(days=2), promo_fim=sorteio.choice([None, agora + timedelta(days=5), agora + timedelta(days=12)]),
+        )
 
     @staticmethod
     def _publicar_marketplaces(produto: Produto, sorteio: random.Random, obrigatorio: bool) -> None:
@@ -113,7 +146,7 @@ class Command(BaseCommand):
             escolhidos = sorteio.sample(produtos, k=sorteio.randint(1, 3))
             itens = [(p, sorteio.randint(1, 3)) for p in escolhidos]
             linhas = {
-                p: ProdutoCanal.objects.get(produto=p, canal=canal).preco_final if canal.codigo == "site"
+                p: ProdutoCanal.objects.get(produto=p, canal=canal).preco_vigente if canal.codigo == "site"
                 else ProdutoCanal.objects.get(produto=p, canal=canal).preco
                 for p, _ in itens
             }
@@ -129,3 +162,12 @@ class Command(BaseCommand):
                 PedidoItem(pedido=pedido, produto=p, sku_externo=p.sku, descricao=p.nome, quantidade=qtd, preco_unitario=linhas[p])
                 for p, qtd in itens
             )
+
+    @staticmethod
+    def _devolucoes_demo() -> None:
+        sorteio = random.Random("devolucoes-demo")
+        itens = list(PedidoItem.objects.filter(pedido__status="entregue", produto__isnull=False)[:40])
+        for item in sorteio.sample(itens, k=min(4, len(itens))):
+            devolucao = devolucoes.solicitar(item, 1, sorteio.choice(["arrependimento", "defeito", "errado"]))
+            if sorteio.random() < 0.5:
+                devolucoes.aprovar(devolucao)
