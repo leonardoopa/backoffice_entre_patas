@@ -5,3 +5,9 @@ services:
       BACKOFFICE_SEED: "1"
     volumes:
       - .:/app
+  worker:
+    environment:
+      DJANGO_DEBUG: "1"
+      MARKETPLACES_SIMULADOS: "1"
+    volumes:
+      - .:/app

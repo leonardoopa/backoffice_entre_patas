@@ -25,13 +25,33 @@ services:
         required: false
     environment:
       DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
-      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:-localhost,127.0.0.1,host.docker.internal}
       POSTGRES_DB: ${POSTGRES_DB:-backoffice}
       POSTGRES_USER: ${POSTGRES_USER:-backoffice}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-backoffice-dev}
       POSTGRES_HOST: db
     ports:
       - "${WEB_PORT:-8500}:8000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      web:
+        condition: service_started
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
+      POSTGRES_DB: ${POSTGRES_DB:-backoffice}
+      POSTGRES_USER: ${POSTGRES_USER:-backoffice}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-backoffice-dev}
+      POSTGRES_HOST: db
+      MARKETPLACES_SIMULADOS: ${MARKETPLACES_SIMULADOS:-0}
+    command: ["python", "manage.py", "executar_worker"]
 
 volumes:
   pgdata:

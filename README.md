@@ -10,7 +10,7 @@ Excel / cadastro manual ──► Backoffice (PostgreSQL + Django Admin) ──�
 
 ## Como o banco é criado
 
-O esquema nasce em **SQL puro**, em `db/sql/V0001__schema.sql`: tabelas, restrições, índices, gatilhos e views. O Django só mostra e edita esses dados: os models têm `managed = False` e não geram tabelas.
+O esquema nasce em **SQL puro**, em `db/sql/`: `V0001__schema.sql` (catálogo, canais, vendas, vitrines) e `V0002__operacao_marketplaces.sql` (reservas de estoque, fila de sincronização, variações, margem, auditoria, devoluções). Tabelas, restrições, índices, gatilhos, funções e views. O Django só mostra e edita esses dados: os models têm `managed = False` e não geram tabelas.
 
 Para o banco ser aplicado igual em desenvolvimento, testes e produção, cada arquivo `.sql` é executado por uma migração do Django (`RunSQL`). Fluxo para mudar o banco:
 
@@ -20,7 +20,12 @@ Para o banco ser aplicado igual em desenvolvimento, testes e produção, cada ar
 4. Abra a migração gerada e acrescente `arquivo_sql("V000N__descricao.sql")` no início de `operations` (veja `0001_initial.py`).
 5. Rode os testes: `test_schema` falha se algum `.sql` não estiver ligado a uma migração.
 
-O que o SQL garante sozinho, mesmo fora do Django: preço promocional nunca maior que o preço, estoque nunca negativo, histórico automático de mudança de preço (gatilho), `atualizado_em` do produto e as views de CRM.
+O que o SQL garante sozinho, mesmo fora do Django:
+
+- preço promocional nunca maior que o preço, período de promoção coerente, estoque nunca negativo, GTIN (8, 12, 13 ou 14 dígitos) e NCM (8 dígitos) válidos;
+- histórico automático de mudança de preço, de status do pedido e auditoria de quem alterou o quê (gatilhos);
+- fila de sincronização com os marketplaces alimentada por gatilho, sem duplicar item pendente;
+- as views de CRM, de margem e de pendências para marketplace.
 
 ## Rodando
 
@@ -31,12 +36,13 @@ docker compose up --build
 docker compose exec web python manage.py createsuperuser
 ```
 
-Abra http://localhost:8500. No modo de desenvolvimento a primeira subida cria o banco, aplica o SQL, cria os perfis de acesso e carrega 65 produtos, estoque e 120 pedidos fictícios nos três canais.
+Abra http://localhost:8500. No modo de desenvolvimento a primeira subida cria o banco, aplica o SQL, cria os perfis de acesso e carrega 65 produtos, estoque e 120 pedidos fictícios nos três canais. O serviço `worker` sobe junto (veja "Estoque, fila de sincronização e worker").
 
 ```bash
 docker compose exec web python manage.py test          # testes (PostgreSQL)
 docker compose exec web python manage.py criar_perfis  # recria os perfis de acesso
-docker compose exec web python manage.py criar_chave_api site-producao site
+docker compose exec web python manage.py criar_chave_api site-producao site   # a chave aparece uma única vez
+docker compose exec web python manage.py executar_worker --uma-vez            # roda um ciclo do worker
 docker compose logs -f web                             # logs
 ```
 
@@ -49,9 +55,9 @@ Usuários são criados em **Usuários**, com "Membro da equipe" marcado e um **p
 | Perfil | Pode |
 | --- | --- |
 | Administrador | Tudo, inclusive usuários, perfis e chaves de API |
-| Gerente comercial | Catálogo, **preços**, **publicar nos canais**, vitrines e importar planilhas; vê vendas; não vê chaves de API |
+| Gerente comercial | Catálogo, **preços**, **publicar nos canais**, vitrines, devoluções e importar planilhas; vê vendas e margens; não vê chaves de API |
 | Catálogo e estoque | Cadastrar e editar produtos, importar planilhas, movimentar estoque. **Não** altera preços nem publica |
-| Atendimento | Vê pedidos e clientes e muda o status do pedido |
+| Atendimento | Vê pedidos e clientes, muda o status do pedido e trata devoluções |
 | Leitura | Só consulta |
 
 Três permissões próprias controlam o que é sensível: `alterar_preco`, `publicar_canal` e `importar_planilha`. Quem não tem `alterar_preco` vê os campos de preço bloqueados; quem não tem `publicar_canal` não vê as ações de publicar.
@@ -69,9 +75,28 @@ Em **Produtos**: "Baixar modelo" e "Importar planilha". Regras:
 
 ## Canais, vitrines e CRM
 
-- **Canais**: `site`, `mercado_livre`, `amazon`. Cada produto tem uma linha por canal com `publicado`, preço, preço promocional e ID no canal. Mudou o preço, o gatilho do banco grava o histórico.
+- **Canais**: `site`, `mercado_livre`, `amazon`. Cada produto tem uma linha por canal com `publicado`, preço, preço promocional (com início e fim opcionais) e ID no canal. Mudou o preço, o gatilho do banco grava o histórico com o autor. Fora do período, o preço promocional deixa de valer sozinho (`preco_vigente` no SQL).
+- **Margem**: cada canal tem comissão e margem mínima. A view de margem desconta comissão e custo do preço vigente; **Alertas de margem** lista o que está abaixo do mínimo.
 - **Vitrines da home**: Ofertas, Mais vendidos e Destaques. Cada uma é **automática** (regra do sistema: ofertas = produtos em promoção; mais vendidos = vendas dos últimos 90 dias em todos os canais) ou **manual** (você escolhe os produtos e a ordem).
 - **CRM**: Pedidos de todos os canais, Clientes, **Vendas por produto e canal** e **Oportunidades para o site** (produtos que vendem nos marketplaces e ainda não estão publicados no site, com a ação "Publicar no site").
+
+## Estoque, fila de sincronização e worker
+
+- **Estoque vendável** = saldo − reservado − estoque de segurança, nunca abaixo de zero. A reserva (30 minutos por padrão) segura a quantidade enquanto o pedido de um canal é fechado; a reserva vencida é liberada pelo worker.
+- **Fila de sincronização** (`fila_sync`): mudar preço, publicação ou estoque de um produto publicado em marketplace enfileira o envio por gatilho. Há no máximo um item pendente por canal, produto e tipo. Falha tenta de novo com espera crescente (2, 4, 8... minutos, até 6 horas) e vira `erro` depois de 8 tentativas; o erro aparece na tela **Fila de sincronização**.
+- **Worker** (`executar_worker`, serviço `worker` do compose): a cada 30 segundos libera reservas vencidas e processa a fila. Com `MARKETPLACES_SIMULADOS=1` (padrão no desenvolvimento) o envio só gera log `sync_simulada`; os adaptadores reais do Mercado Livre e da Amazon entram em `integracoes/` na fase 3.
+
+## Produto para marketplaces
+
+- Dados que os marketplaces exigem: GTIN, NCM, peso (g), altura, largura e comprimento (cm), marca, descrição e várias fotos (**Imagens** no produto).
+- **Pendências para marketplace** mostra o que falta em cada produto (sem GTIN, NCM, peso, dimensões, marca, imagem ou com descrição curta).
+- **Variações**: produtos do mesmo **Grupo de produtos** (ex.: ração de 3 kg e de 10 kg) diferem por `variacao`, cada um com SKU, preço e estoque próprios. O site mostra as variações na página do produto.
+
+## Pedidos, pagamento e devoluções
+
+- Pedido guarda forma de pagamento (Pix, cartão, boleto, marketplace), status do pagamento, referência e parcelas. Toda mudança de status entra no **histórico do pedido** por gatilho.
+- **Devoluções**: criadas a partir de um item do pedido, com motivo e status (solicitada, aprovada, recebida, reembolsada, recusada), só nessa ordem de transições. Não dá para devolver mais do que foi comprado. Ao marcar como recebida, o item volta ao estoque.
+- **Auditoria**: alterações de produto, preço por canal, vitrines, canais, pedidos, devoluções, grupos e chaves de API gravam quem fez (usuário do admin ou `api:<nome da chave>`), o que mudou e quando. Movimentos de estoque e histórico de preço também guardam o autor. A tela **Auditoria** é só de leitura.
 
 ## API para o site
 
@@ -82,13 +107,16 @@ Em **Produtos**: "Baixar modelo" e "Importar planilha". Regras:
 | `GET /api/v1/saude/` | Verificação de saúde (sem chave) |
 | `GET /api/v1/catalogo/taxonomia/` | Animais, departamentos e tipos que têm produto no site (menu) |
 | `GET /api/v1/catalogo/produtos/` | Lista com filtros, busca, ordenação, paginação e facetas |
-| `GET /api/v1/catalogo/produtos/<slug>/` | Detalhe do produto |
+| `GET /api/v1/catalogo/produtos/<slug>/` | Detalhe do produto, com fotos e variações |
 | `GET /api/v1/vitrines/` | Vitrines da home já resolvidas |
 | `POST /api/v1/pedidos/` | Registra o pedido do site e baixa o estoque |
+| `GET /api/v1/pedidos/<numero>/` | Pedido com itens, entrega, pagamento e histórico de status |
+| `POST /api/v1/pedidos/<numero>/pagamento/` | Atualiza o pagamento (`status`: pendente, aprovado, recusado, estornado; `referencia` opcional) |
+| `GET /api/v1/clientes/<id>/pedidos/` | Pedidos de um cliente (o site usa o id da conta ou `visitante:<e-mail>`) |
 
 Filtros da lista: `escopo_animal`, `escopo_departamento`, `escopo_ofertas=1`, `q` (define a base das facetas) e `animal`, `departamento`, `subdepartamento`, `marca`, `faixa` (`ate-50`, `50-100`, `100-200`, `acima-200`), `promo=1`, `ordem` (`relevancia`, `menor-preco`, `maior-preco`, `nome`, `novidades`), `pagina`, `tamanho`.
 
-O preço de cada item do pedido **vem do backoffice**, nunca do site. O pedido é idempotente por `numero_externo` e atômico: se faltar estoque em qualquer item, nada é gravado (`409`). SKU fora do site responde `422`.
+O preço de cada item do pedido **vem do backoffice**, nunca do site. O pedido é idempotente por `numero_externo` e atômico: se faltar estoque em qualquer item, nada é gravado (`409`). SKU fora do site responde `422`. Preço vigente já considera a promoção dentro do período.
 
 ## Estrutura
 
@@ -96,16 +124,17 @@ O preço de cada item do pedido **vem do backoffice**, nunca do site. O pedido �
 db/sql/            esquema do banco em SQL
 backoffice/
   models/          models sem migração (managed = False)
-  services/        regras: estoque, canais, pedidos, importação Excel, chaves de API
+  services/        regras: estoque e reservas, canais, pedidos, devoluções, fila de sincronização, pendências, importação Excel, chaves de API
   selectors/       consultas de leitura (o que o site enxerga)
   api/             endpoints, autenticação por chave
   admin/           telas do Django Admin
   perfis.py        níveis de acesso
-  integracoes/     marketplaces (fase 3)
+  integracoes/     adaptadores dos marketplaces (hoje só o simulado)
+  auditoria.py     autor da alteração gravado nos gatilhos do banco
 ```
 
 ## Próximas fases
 
-1. **Site consumindo a API** (projeto `entrepatas`): trocar a leitura direta do banco por chamadas a esta API, com cache, e enviar os pedidos para cá.
-2. **Mercado Livre e Amazon** (`integracoes/`): importar anúncios e pedidos para o CRM (`anuncio_externo`, `pedido`), vincular anúncios aos produtos por SKU/GTIN e publicar produto, preço e estoque a partir do backoffice. Precisa de contas de desenvolvedor: Mercado Livre (app com OAuth2) e Amazon (Selling Partner API).
-3. Frete e regras comerciais (hoje o site envia o frete no pedido) passando a ser configuradas aqui.
+1. **Mercado Livre e Amazon** (`integracoes/`): trocar o adaptador simulado por adaptadores reais que publicam produto, preço e estoque a partir da fila e importam anúncios e pedidos para o CRM (`anuncio_externo`, `pedido`), vinculando por SKU/GTIN. Precisa de contas de desenvolvedor: Mercado Livre (app com OAuth2) e Amazon (Selling Partner API). Alternativa: integrar um ERP (Bling, Tiny) que já fala com os dois.
+2. Frete e regras comerciais (hoje o site calcula o frete e o envia no pedido) passando a ser configuradas aqui.
+3. Gateway de pagamento chamando `POST /pedidos/<numero>/pagamento/`, nota fiscal e limite de requisições por chave na API.
