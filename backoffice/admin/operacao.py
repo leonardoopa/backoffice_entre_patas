@@ -1,6 +1,8 @@
+import json
+
 from django.contrib import admin, messages
 
-from backoffice.models import ChaveApi, ImportacaoPlanilha
+from backoffice.models import Auditoria, ChaveApi, ImportacaoPlanilha
 from backoffice.services.chaves_api import gerar_chave
 
 from .base import SomenteLeitura
@@ -38,3 +40,21 @@ class ChaveApiAdmin(admin.ModelAdmin):
 
     def has_delete_permission(self, request, obj=None):
         return False
+
+
+@admin.register(Auditoria)
+class AuditoriaAdmin(SomenteLeitura):
+    list_display = ["criado_em", "usuario", "acao", "tabela", "registro_id", "resumo"]
+    list_filter = ["tabela", "acao", "usuario"]
+    search_fields = ["usuario", "tabela"]
+    date_hierarchy = "criado_em"
+    readonly_fields = ["tabela", "registro_id", "acao", "usuario", "criado_em", "mudancas_formatadas"]
+    fields = readonly_fields
+
+    @admin.display(description="Alterações")
+    def resumo(self, obj):
+        return ", ".join(list(obj.mudancas)[:5])
+
+    @admin.display(description="Alterações (de → para)")
+    def mudancas_formatadas(self, obj):
+        return json.dumps(obj.mudancas, ensure_ascii=False, indent=2)

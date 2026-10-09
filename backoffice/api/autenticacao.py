@@ -3,6 +3,7 @@ from functools import wraps
 
 from django.http import JsonResponse
 
+from backoffice.auditoria import definir_usuario
 from backoffice.services.chaves_api import validar_chave
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ def exige_escopo(*escopos: str):
                 logger.warning("api_escopo_negado chave=%s caminho=%s", chave.pk, request.path)
                 return JsonResponse({"erro": "Esta chave não tem permissão para esta operação."}, status=403)
             request.chave_api = chave
+            definir_usuario(f"api:{chave.nome}")
             return view(request, *args, **kwargs)
         return envolvida
     return decorador

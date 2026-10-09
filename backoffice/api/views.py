@@ -10,7 +10,10 @@ from django.views.decorators.http import require_GET, require_POST
 
 from backoffice.selectors import site as consultas
 from backoffice.services.estoque import EstoqueInsuficiente
-from backoffice.services.pedidos import PedidoInvalido, registrar_pedido_site
+from backoffice.models import Pedido
+from backoffice.services.pedidos import (
+    PedidoInvalido, PedidoNaoEncontrado, atualizar_pagamento, buscar_pedido_do_site, registrar_pedido_site,
+)
 
 from . import serializers
 from .autenticacao import exige_escopo
@@ -86,7 +89,7 @@ def produto(request, slug):
     item = consultas.item_por_slug(slug)
     if item is None:
         return JsonResponse({"erro": "Produto não encontrado."}, status=404)
-    return JsonResponse(serializers.produto(item))
+    return JsonResponse(serializers.produto_detalhe(item, consultas.variacoes_do_site(item)))
 
 
 @require_GET
@@ -118,6 +121,7 @@ def criar_pedido(request):
     try:
         resultado = registrar_pedido_site(
             numero_externo=numero, itens=itens, cliente=dados.get("cliente"), entrega=dados.get("entrega"), frete=frete,
+            pagamento=dados.get("pagamento"),
         )
     except EstoqueInsuficiente as erro:
         return JsonResponse(
@@ -131,3 +135,42 @@ def criar_pedido(request):
         {"id": pedido.pk, "numero_externo": pedido.numero_externo, "total": serializers.dinheiro(pedido.total)},
         status=201 if resultado.criado else 200,
     )
+
+
+def _pedidos_com_detalhes():
+    return Pedido.objects.select_related("canal", "cliente").prefetch_related("itens", "historico_status")
+
+
+@require_GET
+@exige_escopo(*LEITURA)
+def pedido_detalhe(request, numero):
+    try:
+        pedido = _pedidos_com_detalhes().get(canal__codigo="site", numero_externo=numero)
+    except Pedido.DoesNotExist:
+        return JsonResponse({"erro": "Pedido não encontrado."}, status=404)
+    return JsonResponse(serializers.pedido(pedido))
+
+
+@require_GET
+@exige_escopo(*LEITURA)
+def pedidos_do_cliente(request, id_externo):
+    pedidos = _pedidos_com_detalhes().filter(canal__codigo="site", cliente__id_externo=id_externo).order_by("-comprado_em")[:100]
+    return JsonResponse({"itens": [serializers.pedido(p) for p in pedidos]})
+
+
+@csrf_exempt
+@require_POST
+@exige_escopo("site")
+def pedido_pagamento(request, numero):
+    try:
+        dados = json.loads(request.body or b"{}")
+        status = str(dados["status"])
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return JsonResponse({"erro": "Corpo inválido: envie status e, se houver, referencia."}, status=400)
+    try:
+        pedido = atualizar_pagamento(numero, status, str(dados.get("referencia", "")))
+    except PedidoNaoEncontrado:
+        return JsonResponse({"erro": "Pedido não encontrado."}, status=404)
+    except PedidoInvalido as erro:
+        return JsonResponse({"erro": str(erro)}, status=422)
+    return JsonResponse({"numero_externo": pedido.numero_externo, "status": pedido.status, "pagamento_status": pedido.pagamento_status})
