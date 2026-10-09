@@ -1,0 +1,7 @@
+services:
+  web:
+    environment:
+      DJANGO_DEBUG: "1"
+      BACKOFFICE_SEED: "1"
+    volumes:
+      - .:/app
