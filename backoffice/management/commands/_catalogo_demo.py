@@ -13,6 +13,8 @@ class ProdutoDemo(NamedTuple):
     cor: str
     estoque: int
     destaque: bool
+    grupo: str = ""
+    variacao: str = ""
 
 
 ANIMAIS = [("Cães", "🐶"), ("Gatos", "🐱"), ("Pássaros", "🐦"), ("Peixes", "🐟"), ("Roedores", "🐹")]
@@ -72,7 +74,7 @@ SUBDEPARTAMENTOS = {
 }
 
 PRODUTOS = [
-    ProdutoDemo("caes", "racoes", "racao-seca", "Ração Premium Adultos Frango e Arroz 15kg", "NutriPet", "219.90", '189.90', "saco", "#D96C4A", 40, True),
+    ProdutoDemo("caes", "racoes", "racao-seca", "Ração Premium Adultos Frango e Arroz 15kg", "NutriPet", "219.90", '189.90', "saco", "#D96C4A", 40, True, "Ração Premium Adultos Frango e Arroz", "15 kg"),
     ProdutoDemo("caes", "racoes", "racao-filhotes", "Ração Filhotes Raças Pequenas 3kg", "NutriPet", "69.90", None, "saco", "#F2B544", 35, False),
     ProdutoDemo("caes", "racoes", "racao-senior", "Ração Sênior 7+ Frango 10kg", "Natu Pet", "159.90", '139.90', "saco", "#4F9D69", 22, True),
     ProdutoDemo("caes", "racoes", "racao-light", "Ração Light Controle de Peso 10kg", "Natu Pet", "149.90", None, "saco", "#7B6BB3", 18, False),
@@ -87,7 +89,7 @@ PRODUTOS = [
     ProdutoDemo("caes", "brinquedos", "cordas-mordedores", "Mordedor Osso Resistente G", "Pata Feliz", "39.90", None, "osso", "#D96C4A", 30, False),
     ProdutoDemo("caes", "brinquedos", "pelucias", "Pelúcia Camarão com Apito", "Bicho Chic", "49.90", '44.90', "bola", "#D8688C", 25, False),
     ProdutoDemo("caes", "brinquedos", "bolas-frisbees", "Frisbee Flexível", "Bicho Chic", "29.90", None, "bola", "#2E9CA6", 42, False),
-    ProdutoDemo("caes", "higiene", "shampoos-condicionadores", "Shampoo Neutro Pelos Claros 500ml", "Banho Bom", "29.90", None, "frasco", "#4A90D9", 48, False),
+    ProdutoDemo("caes", "higiene", "shampoos-condicionadores", "Shampoo Neutro Pelos Claros 500ml", "Banho Bom", "29.90", None, "frasco", "#4A90D9", 48, False, "Shampoo Neutro Pelos Claros", "500 ml"),
     ProdutoDemo("caes", "higiene", "shampoos-condicionadores", "Condicionador Hidratante 500ml", "Banho Bom", "32.90", '27.90', "frasco", "#D8688C", 33, False),
     ProdutoDemo("caes", "higiene", "tapetes-areias", "Tapete Higiênico 30un", "Banho Bom", "74.90", '59.90', "caixa", "#2E9CA6", 0, False),
     ProdutoDemo("caes", "higiene", "escovas-pentes", "Escova Removedora de Pelos", "Bicho Chic", "39.90", None, "caixa", "#7B6BB3", 27, False),
@@ -114,7 +116,7 @@ PRODUTOS = [
     ProdutoDemo("gatos", "brinquedos", "interativos-exercicio", "Varinha com Penas", "Bicho Chic", "22.90", None, "bola", "#D8688C", 46, False),
     ProdutoDemo("gatos", "brinquedos", "pelucias", "Ratinho de Pelúcia com Catnip", "Bicho Chic", "14.90", None, "bola", "#7B6BB3", 75, False),
     ProdutoDemo("gatos", "brinquedos", "arranhadores", "Arranhador Torre 3 Andares", "Pata Feliz", "229.90", '199.90', "caixa", "#9A6B3F", 8, True),
-    ProdutoDemo("gatos", "higiene", "tapetes-areias", "Areia Higiênica Grãos Finos 4kg", "Pipi Clean", "24.90", '19.90', "saco", "#F2B544", 150, True),
+    ProdutoDemo("gatos", "higiene", "tapetes-areias", "Areia Higiênica Grãos Finos 4kg", "Pipi Clean", "24.90", '19.90', "saco", "#F2B544", 150, True, "Areia Higiênica Grãos Finos", "4 kg"),
     ProdutoDemo("gatos", "higiene", "tapetes-areias", "Areia Sílica Perfumada 3,8kg", "Pipi Clean", "39.90", None, "saco", "#2E9CA6", 64, False),
     ProdutoDemo("gatos", "higiene", "shampoos-condicionadores", "Shampoo a Seco Gatos 150ml", "Banho Bom", "27.90", None, "frasco", "#7B6BB3", 29, False),
     ProdutoDemo("gatos", "farmacia", "antipulgas-carrapatos", "Antipulgas Gatos até 4kg", "VetCare", "79.90", '67.90', "caixa", "#C8453B", 21, False),
@@ -137,4 +139,8 @@ PRODUTOS = [
     ProdutoDemo("roedores", "racoes", "racao-seca", "Feno Natural Coelhos e Porquinhos 500g", "ZooMix", "18.90", None, "saco", "#4F9D69", 39, False),
     ProdutoDemo("roedores", "brinquedos", "cordas-mordedores", "Mordedor de Madeira", "ZooMix", "9.90", None, "osso", "#D96C4A", 62, False),
     ProdutoDemo("roedores", "brinquedos", "interativos-exercicio", "Roda de Exercício Silenciosa", "ZooMix", "39.90", '34.90', "bola", "#17375E", 21, False),
+    ProdutoDemo("caes", "racoes", "racao-seca", "Ração Premium Adultos Frango e Arroz 3kg", "NutriPet", "79.90", None, "saco", "#D96C4A", 30, False, "Ração Premium Adultos Frango e Arroz", "3 kg"),
+    ProdutoDemo("caes", "racoes", "racao-seca", "Ração Premium Adultos Frango e Arroz 10kg", "NutriPet", "149.90", "129.90", "saco", "#D96C4A", 22, False, "Ração Premium Adultos Frango e Arroz", "10 kg"),
+    ProdutoDemo("gatos", "higiene", "tapetes-areias", "Areia Higiênica Grãos Finos 12kg", "Pipi Clean", "54.90", None, "saco", "#F2B544", 40, False, "Areia Higiênica Grãos Finos", "12 kg"),
+    ProdutoDemo("caes", "higiene", "shampoos-condicionadores", "Shampoo Neutro Pelos Claros 1L", "Banho Bom", "49.90", None, "frasco", "#4A90D9", 26, False, "Shampoo Neutro Pelos Claros", "1 L"),
 ]

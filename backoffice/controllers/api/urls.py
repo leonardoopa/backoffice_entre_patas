@@ -9,4 +9,7 @@ urlpatterns = [
     path("catalogo/produtos/<slug:slug>/", views.produto),
     path("vitrines/", views.vitrines),
     path("pedidos/", views.criar_pedido),
+    path("pedidos/<str:numero>/", views.pedido_detalhe),
+    path("pedidos/<str:numero>/pagamento/", views.pedido_pagamento),
+    path("clientes/<str:id_externo>/pedidos/", views.pedidos_do_cliente),
 ]

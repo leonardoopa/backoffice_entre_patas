@@ -29,6 +29,20 @@ class Pedido(models.Model):
         ENTREGUE = "entregue", "Entregue"
         CANCELADO = "cancelado", "Cancelado"
 
+    class FormaPagamento(models.TextChoices):
+        NAO_INFORMADA = "", "Não informada"
+        PIX = "pix", "Pix"
+        CARTAO_CREDITO = "cartao_credito", "Cartão de crédito"
+        CARTAO_DEBITO = "cartao_debito", "Cartão de débito"
+        BOLETO = "boleto", "Boleto"
+        MARKETPLACE = "marketplace", "Pago no marketplace"
+
+    class PagamentoStatus(models.TextChoices):
+        PENDENTE = "pendente", "Pendente"
+        APROVADO = "aprovado", "Aprovado"
+        RECUSADO = "recusado", "Recusado"
+        ESTORNADO = "estornado", "Estornado"
+
     canal = models.ForeignKey(Canal, on_delete=models.PROTECT, db_column="canal_id", related_name="pedidos")
     numero_externo = models.CharField("número no canal", max_length=80)
     cliente = models.ForeignKey(
@@ -38,6 +52,10 @@ class Pedido(models.Model):
     subtotal = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     frete = models.DecimalField(max_digits=10, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    forma_pagamento = models.CharField(max_length=20, choices=FormaPagamento.choices, blank=True, default="")
+    pagamento_status = models.CharField(max_length=10, choices=PagamentoStatus.choices, default=PagamentoStatus.PENDENTE)
+    pagamento_referencia = models.CharField(max_length=120, blank=True)
+    parcelas = models.SmallIntegerField(default=1)
     entrega = models.JSONField(default=dict, blank=True)
     comprado_em = models.DateTimeField()
     criado_em = models.DateTimeField(auto_now_add=True)
@@ -71,6 +89,58 @@ class PedidoItem(models.Model):
     @property
     def subtotal(self):
         return self.quantidade * self.preco_unitario
+
+
+class PedidoStatusHistorico(models.Model):
+    pedido = models.ForeignKey(Pedido, on_delete=models.CASCADE, db_column="pedido_id", related_name="historico_status")
+    status_anterior = models.CharField(max_length=12, null=True, blank=True)
+    status_novo = models.CharField(max_length=12)
+    usuario = models.CharField(max_length=150)
+    criado_em = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = "pedido_status_historico"
+        ordering = ["criado_em", "id"]
+        verbose_name = "histórico de status"
+        verbose_name_plural = "histórico de status"
+
+
+class Devolucao(models.Model):
+    class Motivo(models.TextChoices):
+        ARREPENDIMENTO = "arrependimento", "Arrependimento"
+        DEFEITO = "defeito", "Produto com defeito"
+        ERRADO = "errado", "Produto errado"
+        OUTRO = "outro", "Outro"
+
+    class Status(models.TextChoices):
+        SOLICITADA = "solicitada", "Solicitada"
+        APROVADA = "aprovada", "Aprovada"
+        RECEBIDA = "recebida", "Recebida (voltou ao estoque)"
+        REEMBOLSADA = "reembolsada", "Reembolsada"
+        RECUSADA = "recusada", "Recusada"
+
+    pedido_item = models.ForeignKey(
+        PedidoItem, on_delete=models.CASCADE, db_column="pedido_item_id", related_name="devolucoes",
+        verbose_name="item do pedido",
+    )
+    quantidade = models.IntegerField()
+    motivo = models.CharField(max_length=15, choices=Motivo.choices)
+    observacao = models.TextField("observação", blank=True)
+    status = models.CharField(max_length=12, choices=Status.choices, default=Status.SOLICITADA)
+    valor_reembolso = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    criada_em = models.DateTimeField(auto_now_add=True)
+    atualizada_em = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        managed = False
+        db_table = "devolucao"
+        ordering = ["-criada_em"]
+        verbose_name = "devolução"
+        verbose_name_plural = "devoluções"
+
+    def __str__(self):
+        return f"Devolução #{self.pk} ({self.status})"
 
 
 class VendaProdutoCanal(models.Model):

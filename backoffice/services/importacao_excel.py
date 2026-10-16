@@ -1,28 +1,38 @@
 import io
 import logging
+import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, BinaryIO
 
 from django.db import transaction
+from django.utils import timezone
 from openpyxl import Workbook, load_workbook
 
 from backoffice.models import (
-    Animal, Departamento, EstoqueMovimento, ImportacaoPlanilha, Marca, Produto, Subdepartamento,
+    Animal, Departamento, EstoqueMovimento, GrupoProduto, ImportacaoPlanilha, Marca, Produto, ProdutoImagem,
+    Subdepartamento,
 )
-from backoffice.texto import normalizar, slugificar
+from backoffice.services.texto import normalizar, slugificar
 
 from .canais import definir_preco_site, garantir_canais
-from .estoque import definir_saldo
+from .estoque import definir_saldo, definir_seguranca
 
 logger = logging.getLogger(__name__)
 
 LIMITE_LINHAS = 5000
 OBRIGATORIAS = ("sku", "nome", "animal", "preco")
 COLUNAS = (
-    "sku", "nome", "descricao", "marca", "animal", "departamento", "subdepartamento", "gtin", "custo",
-    "preco", "preco_promocional", "estoque", "ativo", "publicar_site", "tipo_arte", "cor_arte", "imagem_url",
+    "sku", "nome", "descricao", "marca", "animal", "departamento", "subdepartamento", "grupo", "variacao",
+    "gtin", "ncm", "peso_g", "altura_cm", "largura_cm", "comprimento_cm", "custo",
+    "preco", "preco_promocional", "promo_inicio", "promo_fim", "estoque", "estoque_seguranca",
+    "ativo", "publicar_site", "tipo_arte", "cor_arte", "imagem_url", "imagens",
 )
+FORMATOS_DE_DATA = ("%d/%m/%Y %H:%M", "%d/%m/%Y", "%Y-%m-%d %H:%M", "%Y-%m-%d")
+SEPARADOR_IMAGENS = "|"
+PADRAO_GTIN = re.compile(r"^(\d{8}|\d{12,14})$")
+PADRAO_NCM = re.compile(r"^\d{8}$")
 APELIDOS = {
     "promocao": "preco_promocional", "publicar_no_site": "publicar_site",
     "ean": "gtin", "gtin_ean": "gtin", "quantidade": "estoque",
@@ -114,8 +124,10 @@ def gerar_modelo_planilha() -> bytes:
     produtos.title = "Produtos"
     produtos.append(list(COLUNAS))
     produtos.append([
-        "RACAO-001", "Ração Premium Adultos 15kg", "Descrição do produto", "NutriPet", "cães", "Rações", "Ração Seca",
-        "7891234567890", "120,00", "189,90", "159,90", 40, "sim", "sim", "saco", "#D96C4A", "",
+        "RACAO-015", "Ração Premium Adultos 15kg", "Alimento completo para cães adultos.", "NutriPet", "cães", "Rações",
+        "Ração Seca", "Ração Premium Adultos", "15 kg", "7891234567890", "23091000", 15200, 62, 40, 20, "120,00",
+        "189,90", "159,90", "10/10/2026", "20/10/2026 23:59", 40, 2, "sim", "sim", "saco", "#D96C4A", "",
+        "https://exemplo.com/foto-1.jpg|https://exemplo.com/foto-2.jpg",
     ])
     instrucoes = livro.create_sheet("Instruções")
     for linha in (
@@ -125,6 +137,11 @@ def gerar_modelo_planilha() -> bytes:
         ["preco, preco_promocional, custo", "Aceita 12,90 ou 12.90. O promocional não pode passar do preço. Valem para o site."],
         ["estoque", "Saldo desejado. O sistema registra a diferença como movimento de importação."],
         ["ativo, publicar_site", "sim ou não. Em branco: produto novo fica ativo e publicado."],
+        ["grupo, variacao", "Produtos com o mesmo grupo viram variações um do outro (ex.: 3 kg e 15 kg). A variação é o rótulo."],
+        ["gtin, ncm, peso_g, altura_cm, largura_cm, comprimento_cm", "Exigidos para publicar em marketplaces. GTIN com 8 ou 12 a 14 dígitos; NCM com 8 dígitos; peso em gramas; medidas em cm."],
+        ["promo_inicio, promo_fim", "Datas da promoção (dd/mm/aaaa ou dd/mm/aaaa hh:mm). Sem datas, a promoção vale até você tirá-la."],
+        ["estoque_seguranca", "Unidades que nunca são vendidas online."],
+        ["imagens", "Endereços das fotos separados por | (a primeira é a principal)."],
         ["tipo_arte", "saco, lata, frasco, bola, osso, caixa, cama, coleira ou pote."],
         ["Células vazias", "Em produto existente, célula vazia mantém o valor atual."],
     ):
@@ -203,6 +220,24 @@ def _inteiro(valores: dict[str, Any], campo: str) -> int | None:
     return numero
 
 
+def _data(valores: dict[str, Any], campo: str) -> datetime | None:
+    bruto = valores.get(campo)
+    if bruto is None or str(bruto).strip() == "":
+        return None
+    if isinstance(bruto, datetime):
+        data = bruto
+    else:
+        for formato in FORMATOS_DE_DATA:
+            try:
+                data = datetime.strptime(str(bruto).strip(), formato)
+                break
+            except ValueError:
+                continue
+        else:
+            raise ValueError(f"{campo}: data '{bruto}' inválida. Use dd/mm/aaaa ou dd/mm/aaaa hh:mm.")
+    return timezone.make_aware(data) if timezone.is_naive(data) else data
+
+
 def _booleano(valores: dict[str, Any], campo: str) -> bool | None:
     bruto = valores.get(campo)
     if bruto is None or str(bruto).strip() == "":
@@ -236,18 +271,29 @@ def _aplicar_linha(valores: dict[str, Any], taxonomia: _Taxonomia, referencia: s
         raise ValueError("preco: campo obrigatório vazio.")
     if promo is not None and promo > preco:
         raise ValueError("preco_promocional: não pode ser maior que o preço.")
+    inicio, fim = _data(valores, "promo_inicio"), _data(valores, "promo_fim")
+    if inicio and fim and fim <= inicio:
+        raise ValueError("promo_fim: precisa ser depois de promo_inicio.")
     produto.preco = preco
+    _aplicar_grupo(produto, valores)
     produto.save()
 
     publicar = _booleano(valores, "publicar_site")
     existente = None if criado else produto.canais.filter(canal__codigo="site").first()
     publicado = publicar if publicar is not None else (True if existente is None else existente.publicado)
     garantir_canais(produto, preco, promo, publicar_site=publicado)
-    definir_preco_site(produto, preco, promo, publicado)
+    linha = definir_preco_site(produto, preco, promo, publicado)
+    if inicio or fim or "promo_inicio" in valores or "promo_fim" in valores:
+        linha.promo_inicio, linha.promo_fim = inicio, fim
+        linha.save(update_fields=["promo_inicio", "promo_fim"])
+    _aplicar_imagens(produto, valores)
 
     estoque = _inteiro(valores, "estoque")
     if estoque is not None:
         definir_saldo(produto, estoque, EstoqueMovimento.Motivo.IMPORTACAO, referencia[:80])
+    seguranca = _inteiro(valores, "estoque_seguranca")
+    if seguranca is not None:
+        definir_seguranca(produto, seguranca)
     return criado
 
 
@@ -264,10 +310,45 @@ def _aplicar_departamentos(produto: Produto, valores: dict[str, Any], taxonomia:
         produto.subdepartamento = None
 
 
+def _aplicar_grupo(produto: Produto, valores: dict[str, Any]) -> None:
+    nome, variacao = _texto(valores, "grupo"), _texto(valores, "variacao")
+    if nome:
+        produto.grupo, _ = GrupoProduto.objects.get_or_create(slug=slugificar(nome), defaults={"nome": nome})
+    if variacao:
+        if produto.grupo_id is None:
+            raise ValueError("variacao: informe também o grupo.")
+        produto.variacao = variacao
+
+
+def _aplicar_imagens(produto: Produto, valores: dict[str, Any]) -> None:
+    urls = [u.strip() for u in _texto(valores, "imagens").split(SEPARADOR_IMAGENS) if u.strip()]
+    if not urls:
+        return
+    ProdutoImagem.objects.filter(produto=produto).delete()
+    ProdutoImagem.objects.bulk_create(ProdutoImagem(produto=produto, url=url[:500], posicao=i) for i, url in enumerate(urls))
+
+
 def _aplicar_opcionais(produto: Produto, valores: dict[str, Any]) -> None:
-    for campo in ("descricao", "gtin", "imagem_url", "cor_arte"):
+    for campo in ("descricao", "imagem_url", "cor_arte"):
         if _texto(valores, campo):
             setattr(produto, campo, _texto(valores, campo))
+    for campo, padrao, dica in (("gtin", PADRAO_GTIN, "8 ou 12 a 14 dígitos"), ("ncm", PADRAO_NCM, "8 dígitos")):
+        texto = _texto(valores, campo)
+        if texto:
+            if not padrao.match(texto):
+                raise ValueError(f"{campo}: '{texto}' inválido, use {dica}, só números.")
+            setattr(produto, campo, texto)
+    peso = _inteiro(valores, "peso_g")
+    if peso is not None:
+        if peso == 0:
+            raise ValueError("peso_g: precisa ser maior que zero.")
+        produto.peso_g = peso
+    for campo in ("altura_cm", "largura_cm", "comprimento_cm"):
+        medida = _decimal(valores, campo)
+        if medida is not None:
+            if medida == 0:
+                raise ValueError(f"{campo}: precisa ser maior que zero.")
+            setattr(produto, campo, medida)
     tipo = normalizar(_texto(valores, "tipo_arte"))
     if tipo:
         if tipo not in Produto.TipoArte.values:

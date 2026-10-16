@@ -2,12 +2,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 
 from django.conf import settings
-from django.db.models import OuterRef, Q, QuerySet, Subquery, Sum
+from django.db.models import OuterRef, Prefetch, Q, QuerySet, Subquery, Sum
 from django.db.models.functions import Coalesce
-from django.http import QueryDict
 from django.utils import timezone
 
-from backoffice.models import Animal, Departamento, PedidoItem, ProdutoCanal, Subdepartamento, Vitrine, VitrineItem
+from backoffice.models import (
+    Animal, Departamento, PedidoItem, ProdutoCanal, ProdutoImagem, Subdepartamento, Vitrine, VitrineItem,
+)
+from backoffice.repositories.precos import anotar_preco_vigente
 
 ORDEM_PADRAO = "relevancia"
 ORDENACOES = {
@@ -27,15 +29,7 @@ class Escopo:
     departamento: str = ""
     ofertas: bool = False
     termo: str = ""
-
-    @classmethod
-    def de_querydict(cls, params: QueryDict) -> "Escopo":
-        return cls(
-            animal=params.get("escopo_animal", ""),
-            departamento=params.get("escopo_departamento", ""),
-            ofertas=params.get("escopo_ofertas") == "1",
-            termo=params.get("q", "").strip(),
-        )
+    skus: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -47,19 +41,6 @@ class Filtros:
     faixa: str = ""
     somente_ofertas: bool = False
     ordem: str = ORDEM_PADRAO
-
-    @classmethod
-    def de_querydict(cls, params: QueryDict) -> "Filtros":
-        faixa, ordem = params.get("faixa", ""), params.get("ordem", ORDEM_PADRAO)
-        return cls(
-            animais=tuple(params.getlist("animal")),
-            departamentos=tuple(params.getlist("departamento")),
-            subdepartamentos=tuple(params.getlist("subdepartamento")),
-            marcas=tuple(params.getlist("marca")),
-            faixa=faixa if faixa in FAIXAS else "",
-            somente_ofertas=params.get("promo") == "1",
-            ordem=ordem if ordem in ORDENACOES else ORDEM_PADRAO,
-        )
 
 
 @dataclass(frozen=True)
@@ -80,11 +61,15 @@ def itens_do_site() -> QuerySet[ProdutoCanal]:
         .annotate(total=Sum("quantidade"))
         .values("total")
     )
-    return (
+    itens = (
         ProdutoCanal.objects.filter(canal__codigo="site", publicado=True, produto__ativo=True)
-        .select_related("produto__marca", "produto__animal", "produto__departamento", "produto__subdepartamento", "produto__estoque")
-        .annotate(valor=Coalesce("preco_promocional", "preco"), vendidas=Coalesce(Subquery(vendidas), 0))
+        .select_related(
+            "produto__marca", "produto__animal", "produto__departamento", "produto__subdepartamento",
+            "produto__grupo", "produto__estoque",
+        )
+        .prefetch_related(Prefetch("produto__imagens", queryset=ProdutoImagem.objects.order_by("posicao", "id")))
     )
+    return anotar_preco_vigente(itens).annotate(vendidas=Coalesce(Subquery(vendidas), 0))
 
 
 def aplicar_escopo(itens: QuerySet[ProdutoCanal], escopo: Escopo) -> QuerySet[ProdutoCanal]:
@@ -93,7 +78,9 @@ def aplicar_escopo(itens: QuerySet[ProdutoCanal], escopo: Escopo) -> QuerySet[Pr
     if escopo.departamento:
         itens = itens.filter(produto__departamento__slug=escopo.departamento)
     if escopo.ofertas:
-        itens = itens.filter(preco_promocional__isnull=False)
+        itens = itens.filter(promo_ativa=True)
+    if escopo.skus:
+        itens = itens.filter(produto__sku__in=escopo.skus)
     if escopo.termo:
         termo = escopo.termo
         itens = itens.filter(
@@ -115,7 +102,7 @@ def aplicar_filtros(itens: QuerySet[ProdutoCanal], filtros: Filtros) -> QuerySet
     if filtros.marcas:
         itens = itens.filter(produto__marca__slug__in=filtros.marcas)
     if filtros.somente_ofertas:
-        itens = itens.filter(preco_promocional__isnull=False)
+        itens = itens.filter(promo_ativa=True)
     if filtros.faixa:
         minimo, maximo = FAIXAS[filtros.faixa]
         if minimo is not None:
@@ -143,6 +130,12 @@ def facetas(base: QuerySet[ProdutoCanal], filtros: Filtros) -> Facetas:
 
 def item_por_slug(slug: str) -> ProdutoCanal | None:
     return itens_do_site().filter(produto__slug=slug).first()
+
+
+def variacoes_do_site(item: ProdutoCanal) -> list[ProdutoCanal]:
+    if item.produto.grupo_id is None:
+        return []
+    return list(itens_do_site().filter(produto__grupo_id=item.produto.grupo_id).order_by("valor", "produto__variacao"))
 
 
 def taxonomia_do_site() -> list[dict]:
@@ -180,7 +173,7 @@ def itens_da_vitrine(vitrine: Vitrine) -> list[ProdutoCanal]:
         return [por_produto[pk] for pk in escolhidos if pk in por_produto][: vitrine.limite]
 
     if vitrine.codigo == "ofertas":
-        itens = itens.filter(preco_promocional__isnull=False).order_by("-vendidas", "produto__nome")
+        itens = itens.filter(promo_ativa=True).order_by("-vendidas", "produto__nome")
     elif vitrine.codigo == "mais_vendidos":
         itens = itens.filter(vendidas__gt=0).order_by("-vendidas", "produto__nome")
     else:

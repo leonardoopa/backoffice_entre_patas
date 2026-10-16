@@ -8,13 +8,15 @@ from django.shortcuts import redirect, render
 from django.urls import path, reverse
 
 from backoffice.models import (
-    Animal, Departamento, Estoque, EstoqueMovimento, Marca, Produto, ProdutoCanal, Subdepartamento,
+    Animal, Departamento, Estoque, EstoqueMovimento, GrupoProduto, Marca, PendenciaMarketplace, Produto, ProdutoCanal,
+    ProdutoImagem, ReservaEstoque, Subdepartamento,
 )
 from backoffice.services.canais import garantir_canais
 from backoffice.services.estoque import movimentar, saldo_atual
+from backoffice.services.pendencias import pendencias_marketplace
 from backoffice.services.importacao_excel import PlanilhaInvalida, gerar_modelo_planilha, importar_planilha
 
-from .base import pode_alterar_preco
+from .base import SomenteLeitura, pode_alterar_preco
 
 logger = logging.getLogger(__name__)
 
@@ -47,21 +49,63 @@ class MarcaAdmin(admin.ModelAdmin):
     prepopulated_fields = {"slug": ("nome",)}
 
 
+class ProdutoCanalForm(forms.ModelForm):
+    class Meta:
+        model = ProdutoCanal
+        fields = "__all__"
+
+    def clean(self):
+        dados = super().clean()
+        canal = self.instance.canal if self.instance.pk else None
+        if canal and canal.tipo == "marketplace" and dados.get("publicado") and not self.instance.publicado:
+            faltando = pendencias_marketplace(self.instance.produto)
+            if faltando:
+                raise forms.ValidationError(f"Não dá para publicar no {canal.nome}. Falta: {', '.join(faltando)}.")
+        promo, preco = dados.get("preco_promocional"), dados.get("preco")
+        if promo is not None and preco is not None and promo > preco:
+            raise forms.ValidationError("O preço promocional não pode ser maior que o preço.")
+        inicio, fim = dados.get("promo_inicio"), dados.get("promo_fim")
+        if inicio and fim and fim <= inicio:
+            raise forms.ValidationError("O fim da promoção precisa ser depois do início.")
+        return dados
+
+
 class ProdutoCanalInline(admin.TabularInline):
     model = ProdutoCanal
+    form = ProdutoCanalForm
     extra = 0
     can_delete = False
-    fields = ["canal", "publicado", "preco", "preco_promocional", "id_externo", "status_sync", "sincronizado_em"]
+    fields = [
+        "canal", "publicado", "preco", "preco_promocional", "promo_inicio", "promo_fim",
+        "id_externo", "status_sync", "sincronizado_em",
+    ]
     readonly_fields = ["canal", "id_externo", "status_sync", "sincronizado_em"]
 
     def get_readonly_fields(self, request, obj=None):
-        extras = [] if pode_alterar_preco(request) else ["preco", "preco_promocional"]
+        extras = [] if pode_alterar_preco(request) else ["preco", "preco_promocional", "promo_inicio", "promo_fim"]
         if not request.user.has_perm("backoffice.publicar_canal"):
             extras.append("publicado")
         return [*self.readonly_fields, *extras]
 
     def has_add_permission(self, request, obj=None):
         return False
+
+
+class ProdutoImagemInline(admin.TabularInline):
+    model = ProdutoImagem
+    extra = 1
+    ordering = ["posicao"]
+
+
+@admin.register(GrupoProduto)
+class GrupoProdutoAdmin(admin.ModelAdmin):
+    list_display = ["nome", "slug", "total_variacoes"]
+    search_fields = ["nome"]
+    prepopulated_fields = {"slug": ("nome",)}
+
+    @admin.display(description="Variações")
+    def total_variacoes(self, obj):
+        return obj.produtos.count()
 
 
 class PlanilhaForm(forms.Form):
@@ -84,12 +128,14 @@ class ProdutoAdmin(admin.ModelAdmin):
     search_fields = ["sku", "nome", "gtin"]
     list_select_related = ["animal", "departamento", "marca"]
     prepopulated_fields = {"slug": ("nome",)}
-    autocomplete_fields = ["marca"]
+    autocomplete_fields = ["marca", "grupo"]
     actions = ["ativar", "desativar", "publicar_no_site", "retirar_do_site"]
     change_list_template = "admin/backoffice/produto/change_list.html"
     fieldsets = [
-        ("Identificação", {"fields": ["sku", "nome", "slug", "gtin", "descricao"]}),
+        ("Identificação", {"fields": ["sku", "nome", "slug", "descricao"]}),
         ("Classificação", {"fields": ["animal", "departamento", "subdepartamento", "marca"]}),
+        ("Variações", {"fields": ["grupo", "variacao"]}),
+        ("Dados para marketplaces", {"fields": ["gtin", "ncm", "peso_g", "altura_cm", "largura_cm", "comprimento_cm"]}),
         ("Preço de referência", {"fields": ["custo", "preco"]}),
         ("Aparência no site", {"fields": ["tipo_arte", "cor_arte", "imagem_url", "avaliacao", "num_avaliacoes"]}),
         ("Situação", {"fields": ["ativo"]}),
@@ -99,7 +145,7 @@ class ProdutoAdmin(admin.ModelAdmin):
         return super().get_queryset(request).prefetch_related("canais__canal").select_related("estoque")
 
     def get_inlines(self, request, obj):
-        return [ProdutoCanalInline] if obj else []
+        return [ProdutoImagemInline, ProdutoCanalInline] if obj else []
 
     def get_readonly_fields(self, request, obj=None):
         return [] if obj is None or pode_alterar_preco(request) else ["custo", "preco"]
@@ -114,7 +160,7 @@ class ProdutoAdmin(admin.ModelAdmin):
     @admin.display(description="Preço no site")
     def preco_site(self, obj):
         linha = next((c for c in obj.canais.all() if c.canal.codigo == "site"), None)
-        return f"R$ {linha.preco_final:.2f}" if linha else "—"
+        return f"R$ {linha.preco_vigente:.2f}" if linha else "—"
 
     @admin.display(description="Saldo")
     def saldo(self, obj):
@@ -224,3 +270,38 @@ class EstoqueMovimentoAdmin(admin.ModelAdmin):
         movimento = movimentar(obj.produto, obj.quantidade, obj.motivo, obj.referencia)
         obj.pk, obj.criado_em = movimento.pk, movimento.criado_em
         obj._state.adding = False
+
+
+@admin.register(Estoque)
+class EstoqueAdmin(admin.ModelAdmin):
+    list_display = ["produto", "quantidade", "reservado", "seguranca", "disponivel"]
+    search_fields = ["produto__sku", "produto__nome"]
+    list_select_related = ["produto"]
+    fields = ["produto", "quantidade", "reservado", "seguranca"]
+    readonly_fields = ["produto", "quantidade", "reservado"]
+
+    def has_add_permission(self, request):
+        return False
+
+    def has_delete_permission(self, request, obj=None):
+        return False
+
+    @admin.display(description="Disponível para venda")
+    def disponivel(self, obj):
+        return obj.disponivel
+
+
+@admin.register(ReservaEstoque)
+class ReservaEstoqueAdmin(SomenteLeitura):
+    list_display = ["criada_em", "produto", "canal", "quantidade", "status", "expira_em", "referencia"]
+    list_filter = ["status", "canal"]
+    search_fields = ["produto__sku", "referencia"]
+    list_select_related = ["produto", "canal"]
+
+
+@admin.register(PendenciaMarketplace)
+class PendenciaMarketplaceAdmin(SomenteLeitura):
+    list_display = ["produto", "sem_gtin", "sem_ncm", "sem_peso", "sem_dimensoes", "sem_marca", "sem_imagem", "descricao_curta"]
+    list_filter = ["sem_gtin", "sem_ncm", "sem_peso", "sem_dimensoes", "sem_marca", "sem_imagem", "descricao_curta"]
+    search_fields = ["produto__sku", "produto__nome"]
+    list_select_related = ["produto"]

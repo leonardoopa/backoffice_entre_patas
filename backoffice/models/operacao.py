@@ -44,3 +44,23 @@ class ChaveApi(models.Model):
 
     def __str__(self):
         return f"{self.nome} ({self.prefixo}…)"
+
+
+class Auditoria(models.Model):
+    tabela = models.CharField(max_length=40)
+    registro_id = models.BigIntegerField()
+    acao = models.CharField(max_length=6)
+    usuario = models.CharField(max_length=150)
+    mudancas = models.JSONField()
+    criado_em = models.DateTimeField()
+
+    class Meta:
+        managed = False
+        db_table = "auditoria"
+        ordering = ["-criado_em", "-id"]
+        verbose_name = "registro de auditoria"
+        verbose_name_plural = "auditoria"
+        default_permissions = ("view",)
+
+    def __str__(self):
+        return f"{self.tabela}#{self.registro_id} {self.acao} por {self.usuario}"

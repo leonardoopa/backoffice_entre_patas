@@ -3,7 +3,7 @@ import logging
 from django.contrib.auth.models import Group, Permission
 from django.core.management.base import BaseCommand
 
-from backoffice.perfis import PERFIS, Perfil
+from backoffice.services.perfis import PERFIS, Perfil
 
 logger = logging.getLogger(__name__)
 
