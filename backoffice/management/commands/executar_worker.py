@@ -4,7 +4,7 @@ import time
 
 from django.core.management.base import BaseCommand
 
-from backoffice.integracoes.base import adaptadores_padrao
+from backoffice.repositories.marketplaces import adaptadores_padrao
 from backoffice.services.estoque import expirar_reservas
 from backoffice.services.sincronizacao import processar_fila
 

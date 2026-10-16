@@ -8,9 +8,9 @@ from django.test import TestCase
 from backoffice.models import Canal, HistoricoPreco, OportunidadeSite, Pedido, PedidoItem, ProdutoCanal, VendaProdutoCanal, Vitrine
 from backoffice.services.pedidos import registrar_pedido_site
 
-from .fabricas import criar_catalogo
+from ..support.fabricas import criar_catalogo
 
-RAIZ = Path(__file__).resolve().parents[2]
+RAIZ = Path(__file__).resolve().parents[3]
 
 
 class EsquemaSqlTests(TestCase):

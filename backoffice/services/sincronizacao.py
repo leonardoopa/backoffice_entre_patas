@@ -5,7 +5,7 @@ from datetime import timedelta
 from django.db import transaction
 from django.utils import timezone
 
-from backoffice.integracoes.base import AdaptadorCanal
+from backoffice.repositories.marketplaces import AdaptadorCanal
 from backoffice.models import FilaSync, ProdutoCanal
 
 logger = logging.getLogger(__name__)

@@ -12,11 +12,11 @@ from backoffice.models import (
     Auditoria, Canal, ChaveApi, Devolucao, FilaSync, HistoricoPreco, ImportacaoPlanilha, Pedido, Produto, ProdutoCanal,
     ProdutoImagem,
 )
-from backoffice.perfis import PERFIS
+from backoffice.services.perfis import PERFIS
 from backoffice.services.estoque import saldo_atual
 from backoffice.services.pedidos import registrar_pedido_site
 
-from .fabricas import SENHA, criar_catalogo, criar_pedido_marketplace, criar_taxonomia, criar_usuario, planilha
+from ..support.fabricas import SENHA, criar_catalogo, criar_pedido_marketplace, criar_taxonomia, criar_usuario, planilha
 
 
 class PerfisTests(TestCase):
@@ -248,7 +248,7 @@ class AdminOperacaoTests(TestCase):
         self.assertEqual((registro.usuario, set(registro.mudancas)), ("ger", {"publicado"}))
 
     def test_nao_publica_no_marketplace_sem_dados_obrigatorios(self):
-        from backoffice.admin.catalogo import ProdutoCanalForm
+        from backoffice.controllers.admin.catalogo import ProdutoCanalForm
 
         linha = ProdutoCanal.objects.get(produto=self.c["racao"], canal=self.ml)
         form = ProdutoCanalForm(
@@ -259,7 +259,7 @@ class AdminOperacaoTests(TestCase):
         self.assertIn("Falta: GTIN/EAN", str(form.errors))
 
     def test_publica_no_marketplace_com_tudo_preenchido(self):
-        from backoffice.admin.catalogo import ProdutoCanalForm
+        from backoffice.controllers.admin.catalogo import ProdutoCanalForm
 
         produto = self.c["racao"]
         produto.gtin, produto.ncm, produto.peso_g = "7891234567895", "23091000", 15000
@@ -275,7 +275,7 @@ class AdminOperacaoTests(TestCase):
         self.assertTrue(form.is_valid(), form.errors)
 
     def test_promocao_com_fim_antes_do_inicio_e_recusada(self):
-        from backoffice.admin.catalogo import ProdutoCanalForm
+        from backoffice.controllers.admin.catalogo import ProdutoCanalForm
 
         linha = ProdutoCanal.objects.get(produto=self.c["racao"], canal__codigo="site")
         agora = timezone.now()

@@ -4,23 +4,46 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.paginator import Paginator
 from django.db import connection
-from django.http import JsonResponse
+from django.http import JsonResponse, QueryDict
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_POST
 
-from backoffice.selectors import site as consultas
-from backoffice.services.estoque import EstoqueInsuficiente
 from backoffice.models import Pedido
+from backoffice.presenters import api as apresentador
+from backoffice.repositories import site as consultas
+from backoffice.services.estoque import EstoqueInsuficiente
 from backoffice.services.pedidos import (
-    PedidoInvalido, PedidoNaoEncontrado, atualizar_pagamento, buscar_pedido_do_site, registrar_pedido_site,
+    PedidoInvalido, PedidoNaoEncontrado, atualizar_pagamento, registrar_pedido_site,
 )
 
-from . import serializers
 from .autenticacao import exige_escopo
 
 logger = logging.getLogger(__name__)
 
 LEITURA = ("site", "leitura")
+
+
+def _escopo(params: QueryDict) -> consultas.Escopo:
+    return consultas.Escopo(
+        animal=params.get("escopo_animal", ""),
+        departamento=params.get("escopo_departamento", ""),
+        ofertas=params.get("escopo_ofertas") == "1",
+        termo=params.get("q", "").strip(),
+        skus=tuple(params.getlist("sku")),
+    )
+
+
+def _filtros(params: QueryDict) -> consultas.Filtros:
+    faixa, ordem = params.get("faixa", ""), params.get("ordem", consultas.ORDEM_PADRAO)
+    return consultas.Filtros(
+        animais=tuple(params.getlist("animal")),
+        departamentos=tuple(params.getlist("departamento")),
+        subdepartamentos=tuple(params.getlist("subdepartamento")),
+        marcas=tuple(params.getlist("marca")),
+        faixa=faixa if faixa in consultas.FAIXAS else "",
+        somente_ofertas=params.get("promo") == "1",
+        ordem=ordem if ordem in consultas.ORDENACOES else consultas.ORDEM_PADRAO,
+    )
 
 
 def _numero(params, nome: str, padrao: int, maximo: int) -> int:
@@ -43,11 +66,11 @@ def taxonomia(request):
     return JsonResponse({
         "animais": [
             {
-                **serializers.animal(entrada["animal"]),
+                **apresentador.animal(entrada["animal"]),
                 "departamentos": [
                     {
-                        **serializers.departamento(d["departamento"]),
-                        "subdepartamentos": [serializers.subdepartamento(s) for s in d["subdepartamentos"]],
+                        **apresentador.departamento(d["departamento"]),
+                        "subdepartamentos": [apresentador.subdepartamento(s) for s in d["subdepartamentos"]],
                     }
                     for d in entrada["departamentos"]
                 ],
@@ -60,8 +83,8 @@ def taxonomia(request):
 @require_GET
 @exige_escopo(*LEITURA)
 def produtos(request):
-    escopo = consultas.Escopo.de_querydict(request.GET)
-    filtros = consultas.Filtros.de_querydict(request.GET)
+    escopo = _escopo(request.GET)
+    filtros = _filtros(request.GET)
     base = consultas.aplicar_escopo(consultas.itens_do_site(), escopo)
     itens = consultas.aplicar_filtros(base, filtros)
 
@@ -73,11 +96,11 @@ def produtos(request):
         "pagina": pagina.number,
         "paginas": pagina.paginator.num_pages,
         "tamanho": tamanho,
-        "itens": [serializers.produto(i) for i in pagina],
+        "itens": [apresentador.produto(i) for i in pagina],
         "facetas": {
-            "animais": [serializers.animal(a) for a in f.animais],
-            "departamentos": [serializers.departamento(d) for d in f.departamentos],
-            "subdepartamentos": [serializers.subdepartamento(s) for s in f.subdepartamentos],
+            "animais": [apresentador.animal(a) for a in f.animais],
+            "departamentos": [apresentador.departamento(d) for d in f.departamentos],
+            "subdepartamentos": [apresentador.subdepartamento(s) for s in f.subdepartamentos],
             "marcas": [{"slug": slug, "nome": nome} for slug, nome in f.marcas],
         },
     })
@@ -89,7 +112,7 @@ def produto(request, slug):
     item = consultas.item_por_slug(slug)
     if item is None:
         return JsonResponse({"erro": "Produto não encontrado."}, status=404)
-    return JsonResponse(serializers.produto_detalhe(item, consultas.variacoes_do_site(item)))
+    return JsonResponse(apresentador.produto_detalhe(item, consultas.variacoes_do_site(item)))
 
 
 @require_GET
@@ -98,7 +121,7 @@ def vitrines(request):
     return JsonResponse({
         vitrine.codigo: {
             "nome": vitrine.nome,
-            "itens": [serializers.produto(i) for i in consultas.itens_da_vitrine(vitrine)],
+            "itens": [apresentador.produto(i) for i in consultas.itens_da_vitrine(vitrine)],
         }
         for vitrine in consultas.vitrines_ativas()
     })
@@ -132,7 +155,7 @@ def criar_pedido(request):
 
     pedido = resultado.pedido
     return JsonResponse(
-        {"id": pedido.pk, "numero_externo": pedido.numero_externo, "total": serializers.dinheiro(pedido.total)},
+        {"id": pedido.pk, "numero_externo": pedido.numero_externo, "total": apresentador.dinheiro(pedido.total)},
         status=201 if resultado.criado else 200,
     )
 
@@ -148,14 +171,14 @@ def pedido_detalhe(request, numero):
         pedido = _pedidos_com_detalhes().get(canal__codigo="site", numero_externo=numero)
     except Pedido.DoesNotExist:
         return JsonResponse({"erro": "Pedido não encontrado."}, status=404)
-    return JsonResponse(serializers.pedido(pedido))
+    return JsonResponse(apresentador.pedido(pedido))
 
 
 @require_GET
 @exige_escopo(*LEITURA)
 def pedidos_do_cliente(request, id_externo):
     pedidos = _pedidos_com_detalhes().filter(canal__codigo="site", cliente__id_externo=id_externo).order_by("-comprado_em")[:100]
-    return JsonResponse({"itens": [serializers.pedido(p) for p in pedidos]})
+    return JsonResponse({"itens": [apresentador.pedido(p) for p in pedidos]})
 
 
 @csrf_exempt

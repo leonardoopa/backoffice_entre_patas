@@ -8,7 +8,7 @@ from django.utils import timezone
 from backoffice.models import Canal, GrupoProduto, Pedido, Produto, ProdutoCanal, ProdutoImagem, Vitrine, VitrineItem
 from backoffice.services.estoque import definir_seguranca, reservar, saldo_atual
 
-from .fabricas import cabecalho_auth, criar_catalogo, criar_pedido_marketplace, criar_produto
+from ..support.fabricas import cabecalho_auth, criar_catalogo, criar_pedido_marketplace, criar_produto
 
 BASE = "/api/v1"
 

@@ -3,7 +3,7 @@ from functools import wraps
 
 from django.http import JsonResponse
 
-from backoffice.auditoria import definir_usuario
+from backoffice.services.auditoria import definir_usuario
 from backoffice.services.chaves_api import validar_chave
 
 logger = logging.getLogger(__name__)

@@ -8,7 +8,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from backoffice.models import Canal, Cliente, EstoqueMovimento, Pedido, PedidoItem, Produto, ProdutoCanal
-from backoffice.precos import anotar_preco_vigente
+from backoffice.repositories.precos import anotar_preco_vigente
 
 from .estoque import EstoqueInsuficiente, movimentar, vender
 

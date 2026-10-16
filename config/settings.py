@@ -5,6 +5,7 @@ from pathlib import Path
 from .logging_config import montar_logging
 
 BASE_DIR = Path(__file__).resolve().parent.parent
+FRONTEND_DIR = BASE_DIR / "frontend"
 
 
 def env_lista(nome, padrao=""):
@@ -45,7 +46,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
-    "backoffice.auditoria.UsuarioAuditoriaMiddleware",
+    "backoffice.controllers.middleware.UsuarioAuditoriaMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
 
@@ -54,7 +55,7 @@ ROOT_URLCONF = "config.urls"
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
-        "DIRS": [],
+        "DIRS": [FRONTEND_DIR / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {
             "context_processors": [

@@ -3,7 +3,7 @@ from django.test import TestCase
 from backoffice.models import Estoque, EstoqueMovimento
 from backoffice.services.estoque import EstoqueInsuficiente, definir_saldo, movimentar, saldo_atual
 
-from .fabricas import criar_catalogo
+from ..support.fabricas import criar_catalogo
 
 
 class EstoqueTests(TestCase):

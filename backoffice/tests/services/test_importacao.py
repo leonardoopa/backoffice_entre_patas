@@ -10,7 +10,7 @@ from backoffice.models import GrupoProduto, ImportacaoPlanilha, Marca, Produto, 
 from backoffice.services.estoque import saldo_atual
 from backoffice.services.importacao_excel import COLUNAS, PlanilhaInvalida, gerar_modelo_planilha, importar_planilha
 
-from .fabricas import criar_catalogo, criar_taxonomia, planilha
+from ..support.fabricas import criar_catalogo, criar_taxonomia, planilha
 
 
 def importar(linhas, colunas=None, apenas_validar=False):

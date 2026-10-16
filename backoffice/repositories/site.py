@@ -4,13 +4,12 @@ from datetime import timedelta
 from django.conf import settings
 from django.db.models import OuterRef, Prefetch, Q, QuerySet, Subquery, Sum
 from django.db.models.functions import Coalesce
-from django.http import QueryDict
 from django.utils import timezone
 
 from backoffice.models import (
     Animal, Departamento, PedidoItem, ProdutoCanal, ProdutoImagem, Subdepartamento, Vitrine, VitrineItem,
 )
-from backoffice.precos import anotar_preco_vigente
+from backoffice.repositories.precos import anotar_preco_vigente
 
 ORDEM_PADRAO = "relevancia"
 ORDENACOES = {
@@ -32,16 +31,6 @@ class Escopo:
     termo: str = ""
     skus: tuple[str, ...] = ()
 
-    @classmethod
-    def de_querydict(cls, params: QueryDict) -> "Escopo":
-        return cls(
-            animal=params.get("escopo_animal", ""),
-            departamento=params.get("escopo_departamento", ""),
-            ofertas=params.get("escopo_ofertas") == "1",
-            termo=params.get("q", "").strip(),
-            skus=tuple(params.getlist("sku")),
-        )
-
 
 @dataclass(frozen=True)
 class Filtros:
@@ -52,19 +41,6 @@ class Filtros:
     faixa: str = ""
     somente_ofertas: bool = False
     ordem: str = ORDEM_PADRAO
-
-    @classmethod
-    def de_querydict(cls, params: QueryDict) -> "Filtros":
-        faixa, ordem = params.get("faixa", ""), params.get("ordem", ORDEM_PADRAO)
-        return cls(
-            animais=tuple(params.getlist("animal")),
-            departamentos=tuple(params.getlist("departamento")),
-            subdepartamentos=tuple(params.getlist("subdepartamento")),
-            marcas=tuple(params.getlist("marca")),
-            faixa=faixa if faixa in FAIXAS else "",
-            somente_ofertas=params.get("promo") == "1",
-            ordem=ordem if ordem in ORDENACOES else ORDEM_PADRAO,
-        )
 
 
 @dataclass(frozen=True)

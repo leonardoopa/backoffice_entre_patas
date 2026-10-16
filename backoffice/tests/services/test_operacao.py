@@ -4,8 +4,8 @@ from decimal import Decimal
 from django.test import TestCase
 from django.utils import timezone
 
-from backoffice.auditoria import com_usuario
-from backoffice.integracoes.base import AdaptadorSimulado
+from backoffice.services.auditoria import com_usuario
+from backoffice.repositories.marketplaces import AdaptadorSimulado
 from backoffice.models import (
     AlertaMargem, Auditoria, Canal, Devolucao, EstoqueMovimento, FilaSync, HistoricoPreco, MargemProdutoCanal,
     Pedido, PedidoStatusHistorico, PendenciaMarketplace, ProdutoCanal, ReservaEstoque,
@@ -19,7 +19,7 @@ from backoffice.services.pedidos import atualizar_pagamento, cancelar_pedido, re
 from backoffice.services.pendencias import pendencias_marketplace
 from backoffice.services.sincronizacao import MAX_TENTATIVAS, processar_fila, tentar_novamente
 
-from .fabricas import criar_catalogo, criar_pedido_marketplace
+from ..support.fabricas import criar_catalogo, criar_pedido_marketplace
 
 
 class ReservaEEstoqueTests(TestCase):

@@ -14,7 +14,7 @@ from backoffice.models import (
     Animal, Departamento, EstoqueMovimento, GrupoProduto, ImportacaoPlanilha, Marca, Produto, ProdutoImagem,
     Subdepartamento,
 )
-from backoffice.texto import normalizar, slugificar
+from backoffice.services.texto import normalizar, slugificar
 
 from .canais import definir_preco_site, garantir_canais
 from .estoque import definir_saldo, definir_seguranca

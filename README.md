@@ -84,7 +84,7 @@ Em **Produtos**: "Baixar modelo" e "Importar planilha". Regras:
 
 - **Estoque vendável** = saldo − reservado − estoque de segurança, nunca abaixo de zero. A reserva (30 minutos por padrão) segura a quantidade enquanto o pedido de um canal é fechado; a reserva vencida é liberada pelo worker.
 - **Fila de sincronização** (`fila_sync`): mudar preço, publicação ou estoque de um produto publicado em marketplace enfileira o envio por gatilho. Há no máximo um item pendente por canal, produto e tipo. Falha tenta de novo com espera crescente (2, 4, 8... minutos, até 6 horas) e vira `erro` depois de 8 tentativas; o erro aparece na tela **Fila de sincronização**.
-- **Worker** (`executar_worker`, serviço `worker` do compose): a cada 30 segundos libera reservas vencidas e processa a fila. Com `MARKETPLACES_SIMULADOS=1` (padrão no desenvolvimento) o envio só gera log `sync_simulada`; os adaptadores reais do Mercado Livre e da Amazon entram em `integracoes/` na fase 3.
+- **Worker** (`executar_worker`, serviço `worker` do compose): a cada 30 segundos libera reservas vencidas e processa a fila. Com `MARKETPLACES_SIMULADOS=1` (padrão no desenvolvimento) o envio só gera log `sync_simulada`; os adaptadores reais do Mercado Livre e da Amazon entram em `repositories/marketplaces/` na fase 3.
 
 ## Produto para marketplaces
 
@@ -118,23 +118,49 @@ Filtros da lista: `escopo_animal`, `escopo_departamento`, `escopo_ofertas=1`, `q
 
 O preço de cada item do pedido **vem do backoffice**, nunca do site. O pedido é idempotente por `numero_externo` e atômico: se faltar estoque em qualquer item, nada é gravado (`409`). SKU fora do site responde `422`. Preço vigente já considera a promoção dentro do período.
 
-## Estrutura
+## Estrutura (MVC)
+
+Mesma organização do site: back-end em camadas dentro de `backoffice/`, front-end fora do app, em `frontend/`.
 
 ```
-db/sql/            esquema do banco em SQL
+config/                        settings, urls raiz e configuração de logs
+db/sql/                        esquema do banco em SQL
 backoffice/
-  models/          models sem migração (managed = False)
-  services/        regras: estoque e reservas, canais, pedidos, devoluções, fila de sincronização, pendências, importação Excel, chaves de API
-  selectors/       consultas de leitura (o que o site enxerga)
-  api/             endpoints, autenticação por chave
-  admin/           telas do Django Admin
-  perfis.py        níveis de acesso
-  integracoes/     adaptadores dos marketplaces (hoje só o simulado)
-  auditoria.py     autor da alteração gravado nos gatilhos do banco
+  models/                      M: models sem migração (managed = False)
+  repositories/                M: acesso a dados
+    site.py                    consultas de leitura que o site enxerga (escopo, filtros, facetas, vitrines)
+    precos.py                  preço vigente calculado pelas funções SQL
+    marketplaces/              adaptadores dos canais: contratos, simulado e fábrica
+  services/                    M: regras de negócio
+                               estoque e reservas, canais, pedidos, devoluções, fila de sincronização,
+                               pendências, importação Excel, chaves de API, perfis de acesso,
+                               auditoria (autor gravado nos gatilhos) e texto
+  controllers/                 C: recebem a requisição e chamam os services
+    api/                       endpoints JSON, rotas e autenticação por chave
+    admin/                     telas do Django Admin
+    middleware.py              informa ao banco quem está agindo
+  presenters/                  dados prontos para a tela (api.py: JSON da API)
+  management/commands/         comandos: seed_demo, criar_perfis, criar_chave_api, executar_worker
+  migrations/                  uma migração por arquivo SQL (RunSQL)
+  tests/                       espelha as camadas: controllers/, services/, repositories/, support/
+frontend/
+  templates/admin/             V: telas do admin que sobrescrevem as padrão (importar planilha)
 ```
+
+Regras de dependência (a seta aponta para quem é usado):
+
+```
+controllers -> services -> repositories -> models
+controllers -> presenters -> models
+services/sincronizacao usa os contratos de repositories/marketplaces
+```
+
+- `models` não importa nada do projeto. Só `controllers` conhecem `request` e `JsonResponse`; a leitura da querystring (escopo e filtros do catálogo) fica em `controllers/api/views.py`.
+- O Django Admin é registrado por `BackofficeConfig.ready()`, que importa `controllers/admin`.
+- Para outro marketplace, implemente `AdaptadorCanal` em `repositories/marketplaces/` e registre-o em `fabrica.py`; o worker e a fila não mudam.
 
 ## Próximas fases
 
-1. **Mercado Livre e Amazon** (`integracoes/`): trocar o adaptador simulado por adaptadores reais que publicam produto, preço e estoque a partir da fila e importam anúncios e pedidos para o CRM (`anuncio_externo`, `pedido`), vinculando por SKU/GTIN. Precisa de contas de desenvolvedor: Mercado Livre (app com OAuth2) e Amazon (Selling Partner API). Alternativa: integrar um ERP (Bling, Tiny) que já fala com os dois.
+1. **Mercado Livre e Amazon** (`repositories/marketplaces/`): trocar o adaptador simulado por adaptadores reais que publicam produto, preço e estoque a partir da fila e importam anúncios e pedidos para o CRM (`anuncio_externo`, `pedido`), vinculando por SKU/GTIN. Precisa de contas de desenvolvedor: Mercado Livre (app com OAuth2) e Amazon (Selling Partner API). Alternativa: integrar um ERP (Bling, Tiny) que já fala com os dois.
 2. Frete e regras comerciais (hoje o site calcula o frete e o envia no pedido) passando a ser configuradas aqui.
 3. Gateway de pagamento chamando `POST /pedidos/<numero>/pagamento/`, nota fiscal e limite de requisições por chave na API.
